@@ -1,0 +1,24 @@
+# Rust build
+/target/
+**/*.rs.bk
+
+# Corpus build artifacts (rebuild with corpus/source-compiled/build.sh)
+/corpus/source-compiled/out/
+
+# Owl analysis artifacts
+/.owl-target/
+
+# Local IDE / plugin artifacts (may contain tokens; rebuild on demand)
+/.arts/
+/.merkle-snapshot.json
+.vscode/
+.idea/
+
+# ai-commit drafts (local only; rest of .aictx stays tracked)
+.aictx/commit-drafts.json
+
+# OS
+.DS_Store
+
+# Ephemeral
+*.tmp

@@ -1,0 +1,33 @@
+[package]
+name = "heterowasm-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description.workspace = true
+
+[[bin]]
+name = "heterowasm"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+heterowasm-address.workspace = true
+heterowasm-cfg.workspace = true
+heterowasm-dependence.workspace = true
+heterowasm-eval.workspace = true
+heterowasm-frontend.workspace = true
+heterowasm-ir.workspace = true
+heterowasm-legality.workspace = true
+heterowasm-scev.workspace = true
+heterowasm-trace.workspace = true
+clap.workspace = true
+thiserror.workspace = true
+heterowasm-wgsl = { version = "0.1.0", path = "../heterowasm-wgsl" }
+heterowasm-bounds = { version = "0.1.0", path = "../heterowasm-bounds" }
+wat.workspace = true
+wasmprinter.workspace = true
+heterowasm-runtime = { version = "0.1.0", path = "../heterowasm-runtime" }
+wasmtime = "49.0.1"

@@ -1,0 +1,47 @@
+# clippy.toml — thresholds and semantics (severity lives in root Cargo.toml
+# [workspace.lints]). Valid keys: https://doc.rust-lang.org/clippy/configuration.html
+
+# —— complexity / shape thresholds ——
+cognitive-complexity-threshold = 25
+too-many-lines-threshold = 100
+too-many-arguments-threshold = 7
+type-complexity-threshold = 250
+enum-variant-size-threshold = 200
+enum-variant-name-threshold = 40
+stack-size-threshold = 8192
+literal-representation-threshold = 16384
+trivial-copy-size-limit = 8
+max-trait-bounds = 3
+struct-field-name-threshold = 3
+single-char-binding-names-threshold = 3
+
+# —— test-friendly (production paths still gated by workspace unwrap/panic lints) ——
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-dbg-in-tests = true
+allow-print-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-useless-vec-in-tests = true
+
+# —— project terms (doc-identifier allowlist) ——
+doc-valid-idents = [
+  "WasmProof",
+  "WebAssembly",
+  "Wasmtime",
+  "WIT",
+  "WASI",
+  "Canonical",
+  "ABI",
+  "SMT",
+  "IR",
+  "CLI",
+  "JSON",
+  "GitHub",
+  "MiMo",
+  "Bytecode",
+  "Alliance",
+  "SARIF",
+  "FNV",
+  "DevOps",
+]

@@ -1,0 +1,23 @@
+[package]
+name = "heterowasm-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+heterowasm-trace.workspace = true
+thiserror.workspace = true
+wgpu.workspace = true
+# wgpu is async; this crate's API is sync — pollster is the minimal bridge.
+pollster = "1.0.1"
+# Host wasm execution. **Must be a normal dependency** (not
+# dev-dependency): without it, "no hand-written wasmtime + wgpu glue" is false.
+wasmtime.workspace = true
+
+[dev-dependencies]
+wat.workspace = true

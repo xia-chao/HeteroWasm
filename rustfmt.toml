@@ -1,0 +1,12 @@
+# rustfmt.toml — workspace-wide format (stable rustfmt options only)
+# Run: cargo fmt --all
+# Check: cargo fmt --all -- --check
+# Note: imports_granularity / group_imports need nightly; omit on stable to
+# avoid warnings.
+
+edition = "2021"
+max_width = 100
+use_small_heuristics = "Default"
+newline_style = "Unix"
+use_field_init_shorthand = true
+use_try_shorthand = true

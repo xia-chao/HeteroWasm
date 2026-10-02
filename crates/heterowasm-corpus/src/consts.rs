@@ -1,0 +1,291 @@
+use crate::types::{Case, Category, Expectation};
+
+
+pub const CASES: &[Case] = &[
+    Case {
+        name: "pointwise/vector_add",
+        category: Category::Synthetic,
+        expression: "C[i] = A[i] + B[i]",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/pointwise/vector_add.wat"),
+    },
+    Case {
+        name: "pointwise/saxpy",
+        category: Category::Synthetic,
+        expression: "C[i] = alpha * A[i] + B[i]",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/pointwise/saxpy.wat"),
+    },
+    Case {
+        name: "pointwise/elementwise_mul",
+        category: Category::Synthetic,
+        expression: "C[i] = A[i] * B[i]",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/pointwise/elementwise_mul.wat"),
+    },
+    Case {
+        name: "integer/image_invert",
+        category: Category::Synthetic,
+        expression: "C[i] = 255 - A[i]",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/integer/image_invert.wat"),
+    },
+    Case {
+        name: "integer/inplace_scale",
+        category: Category::Synthetic,
+        expression: "A[i] = A[i] * 2 (same-location read-modify-write)",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/integer/inplace_scale.wat"),
+    },
+    Case {
+        name: "integer/inplace_scale_constant_trip",
+        category: Category::Synthetic,
+        expression: "A[i] = A[i] * 2, iteration bound is constant 8",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/integer/inplace_scale_constant_trip.wat"),
+    },
+    Case {
+        name: "integer/inplace_mask_constant_trip",
+        category: Category::Synthetic,
+        expression: "A[i] = A[i] & 1, iteration bound is constant 8",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/integer/inplace_mask_constant_trip.wat"),
+    },
+    Case {
+        name: "integer/constant_base",
+        category: Category::Synthetic,
+        expression: "M[4i] = v, i ∈ [0,8), memory declares a maximum",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/integer/constant_base.wat"),
+    },
+    Case {
+        name: "integer/running_pointer",
+        category: Category::Synthetic,
+        expression: "M[p] = v, p += 4 each iter, **exit value of p is returned** (not a pass-through live-out)",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/integer/running_pointer.wat"),
+    },
+    Case {
+        name: "integer/scale_running_pointer",
+        category: Category::Synthetic,
+        expression: "A[p/4] *= 2 with running pointer p, then store final p at byte 512 (induction live-out, not pass-through)",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/integer/scale_running_pointer.wat"),
+    },
+    Case {
+        name: "stride/strided_copy",
+        category: Category::Synthetic,
+        expression: "C[2i] = A[2i]",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/stride/strided_copy.wat"),
+    },
+    Case {
+        name: "control/two_loops",
+        category: Category::Synthetic,
+        expression: "C[i] = A[i] + 1 then A[i] = C[i] * 3",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/control/two_loops.wat"),
+    },
+    Case {
+        name: "fusable/chain2",
+        category: Category::Synthetic,
+        expression: "X[i] = A[i] + B[i] then Y[i] = X[i] * 3 (X is a pure intermediate)",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/fusable/chain2.wat"),
+    },
+    Case {
+        name: "fusable/chain3",
+        category: Category::Synthetic,
+        expression: "X=A+B → Y=X*3 → Z=Y-C (two pure intermediates)",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/fusable/chain3.wat"),
+    },
+
+    Case {
+        name: "intensity/stencil5",
+        category: Category::Synthetic,
+        expression: "out[i+2] = in[i]+in[i+1]+in[i+2]+in[i+3]+in[i+4] (5-point stencil)",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/intensity/stencil5.wat"),
+    },
+    Case {
+        name: "intensity/stencil5_centered",
+        category: Category::Synthetic,
+        expression: "out[i] = in[i-2]+…+in[i+2] (**natural 5-point stencil**: includes negative constant offsets)",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/intensity/stencil5_centered.wat"),
+    },
+    Case {
+        name: "intensity/conv3",
+        category: Category::Synthetic,
+        expression: "out[i+1] = 1*in[i] + 2*in[i+1] + 3*in[i+2] (3-tap convolution)",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/intensity/conv3.wat"),
+    },
+    Case {
+        name: "intensity/poly64",
+        category: Category::Synthetic,
+        expression: "out[i] = 64 Horner polynomial evals, x = in[i] (**k = 16, measured GPU 4.03× faster**)",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/intensity/poly64.wat"),
+    },
+    Case {
+        name: "intensity/horner8",
+        category: Category::Synthetic,
+        expression: "out[i] = 8-step Horner, x = in[i] (n=65536 GPU 6.37x slower)",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/intensity/horner8.wat"),
+    },
+    Case {
+        name: "intensity/horner16",
+        category: Category::Synthetic,
+        expression: "out[i] = 16-step Horner, x = in[i] (n=65536 GPU 1.44x slower)",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/intensity/horner16.wat"),
+    },
+    Case {
+        name: "intensity/horner32",
+        category: Category::Synthetic,
+        expression: "out[i] = 32-step Horner, x = in[i] (n=65536 GPU 1.78x faster)",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/intensity/horner32.wat"),
+    },
+    Case {
+        name: "intensity/horner4",
+        category: Category::Synthetic,
+        expression: "out[i] = ((1*x+3)*x+2)*x+1)*x+0, x = in[i] (Horner, **paren regression guard**)",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/intensity/horner4.wat"),
+    },
+
+    Case {
+        name: "fusion/extra_reader",
+        category: Category::Synthetic,
+        expression: "X=A+B, then X is read by two loops (parallelizable, but intermediate is not exclusive)",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/negative/extra_reader.wat"),
+    },
+    Case {
+        name: "fusion/cycle_swap",
+        category: Category::Synthetic,
+        expression: "X=A+1 then A=X*3 (parallelizable, but the two loops form a dep cycle; not fusable)",
+        expectation: Expectation::Parallelizable,
+        wat: include_str!("../../../corpus/synthetic/negative/cycle_swap.wat"),
+    },
+    Case {
+        name: "control/no_loop",
+        category: Category::Synthetic,
+        expression: "C[0] = v",
+        expectation: Expectation::NoCandidate {
+            reason: "no loops; not a parallel candidate",
+        },
+        wat: include_str!("../../../corpus/synthetic/control/no_loop.wat"),
+    },
+    Case {
+        name: "unsupported/nested_loop",
+        category: Category::Synthetic,
+        expression: "A[r][c] = A[r][c] * 2",
+        expectation: Expectation::Undetermined,
+        wat: include_str!("../../../corpus/synthetic/unsupported/nested_loop.wat"),
+    },
+
+    Case {
+        name: "loop_carried_scalar",
+        category: Category::Negative,
+        expression: "s = 0; loop s += in[i]; after loop out[0] = s (reduction)",
+        expectation: Expectation::MustReject {
+            reason: "loop-carried scalar with non-constant update: iterations are not independent; accumulator has a RAW",
+        },
+        wat: include_str!("../../../corpus/negative/loop_carried_scalar.wat"),
+    },
+    Case {
+        name: "loop_carried_raw",
+        category: Category::Negative,
+        expression: "A[i] = A[i-1] + 1",
+        expectation: Expectation::MustReject {
+            reason: "loop-carried RAW: iteration i reads what iteration i-1 wrote",
+        },
+        wat: include_str!("../../../corpus/negative/loop_carried_raw.wat"),
+    },
+    Case {
+        name: "indirect_index",
+        category: Category::Negative,
+        expression: "A[i] = B[C[i]]",
+        expectation: Expectation::MustReject {
+            reason: "index itself is a load result; address is not affine; access set cannot be decided statically",
+        },
+        wat: include_str!("../../../corpus/negative/indirect_index.wat"),
+    },
+    Case {
+        name: "call_in_loop",
+        category: Category::Negative,
+        expression: "C[i] = scale(A[i])",
+        expectation: Expectation::MustReject {
+            reason: "loop body contains a call; callee access set and side effects cannot be bounded statically",
+        },
+        wat: include_str!("../../../corpus/negative/call_in_loop.wat"),
+    },
+    Case {
+        name: "bounds_unproven",
+        category: Category::Negative,
+        expression: "C[i] = A[i+1]",
+        expectation: Expectation::RequiresGuard {
+            guard: "bounds guard: must prove or runtime-check that i+1 is in range of A",
+        },
+        wat: include_str!("../../../corpus/negative/bounds_unproven.wat"),
+    },
+    Case {
+        name: "unaligned_access",
+        category: Category::Negative,
+        expression: "C[i] = A[i] (byte-wise, width 1)",
+        expectation: Expectation::MustReject {
+            reason: "access width is 1 byte; violates spec §16 \"4-byte-aligned i32/f32-like only\" policy",
+        },
+        wat: include_str!("../../../corpus/negative/unaligned_access.wat"),
+    },
+    Case {
+        name: "spilled_carried_raw",
+        category: Category::Negative,
+        expression: "A[i] = A[i-1] + 1, but i lives in a memory slot (-O0 shape)",
+        expectation: Expectation::MustReject {
+            reason: "cross-iteration RAW does not vanish because the loop var lives in memory; memory-recurrence recognition must not let it through",
+        },
+        wat: include_str!("../../../corpus/negative/spilled_carried_raw.wat"),
+    },
+    Case {
+        name: "bulk_memory_in_loop",
+        category: Category::Negative,
+        expression: "loop body contains memory.fill(a, 0, 4)",
+        expectation: Expectation::MustReject {
+            reason: "bulk memory ops read/write memory without load/store; access set is outside address recovery",
+        },
+        wat: include_str!("../../../corpus/negative/bulk_memory_in_loop.wat"),
+    },
+    Case {
+        name: "bulk_memory_init_in_loop",
+        category: Category::Negative,
+        expression: "loop body contains memory.init $payload(a, 0, 4)",
+        expectation: Expectation::MustReject {
+            reason: "memory.init was lowered to memory.copy by the front-end (WAFFLE does not know it) — the lowering must stay conservative: it is still a bulk memory op that bypasses load/store, so the Effects obligation must still reject it",
+        },
+        wat: include_str!("../../../corpus/negative/bulk_memory_init_in_loop.wat"),
+    },
+    Case {
+        name: "war_dependence",
+        category: Category::Negative,
+        expression: "A[i] = A[i+1] + 1",
+        expectation: Expectation::MustReject {
+            reason: "cross-iteration WAR: iteration i writes A[i], while iteration i-1 already read A[i]",
+        },
+        wat: include_str!("../../../corpus/negative/war_dependence.wat"),
+    },
+    Case {
+        name: "waw_dependence",
+        category: Category::Negative,
+        expression: "A[i] = v then A[i-1] = v",
+        expectation: Expectation::MustReject {
+            reason: "cross-iteration WAW: A[i] is written by both iteration i and i+1",
+        },
+        wat: include_str!("../../../corpus/negative/waw_dependence.wat"),
+    },
+];

@@ -1,0 +1,27 @@
+(module
+  (memory (export "mem") 16)
+  (func $chain3 (param $a i32) (param $b i32) (param $c i32) (param $x i32) (param $y i32) (param $z i32) (param $n i32)
+    (local $i i32)
+    (block $e_1 (loop $l_1
+      (br_if $e_1 (i32.ge_s (local.get $i) (local.get $n)))
+      (i32.store (i32.add (local.get $x) (i32.mul (local.get $i) (i32.const 4)))
+        (i32.add (i32.load (i32.add (local.get $a) (i32.mul (local.get $i) (i32.const 4)))) (i32.load (i32.add (local.get $b) (i32.mul (local.get $i) (i32.const 4))))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l_1)))
+    (local.set $i (i32.const 0))
+    (block $e_2 (loop $l_2
+      (br_if $e_2 (i32.ge_s (local.get $i) (local.get $n)))
+      (i32.store (i32.add (local.get $y) (i32.mul (local.get $i) (i32.const 4)))
+        (i32.mul (i32.load (i32.add (local.get $x) (i32.mul (local.get $i) (i32.const 4)))) (i32.const 3)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l_2)))
+    (local.set $i (i32.const 0))
+    (block $e_3 (loop $l_3
+      (br_if $e_3 (i32.ge_s (local.get $i) (local.get $n)))
+      (i32.store (i32.add (local.get $z) (i32.mul (local.get $i) (i32.const 4)))
+        (i32.sub (i32.load (i32.add (local.get $y) (i32.mul (local.get $i) (i32.const 4)))) (i32.load (i32.add (local.get $c) (i32.mul (local.get $i) (i32.const 4))))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l_3)))
+  )
+  (export "main" (func $chain3))
+)

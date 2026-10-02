@@ -1,0 +1,36 @@
+[package]
+name = "heterowasm-wgsl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+heterowasm-address.workspace = true
+heterowasm-bounds.workspace = true
+heterowasm-cfg.workspace = true
+heterowasm-scev.workspace = true
+heterowasm-trace.workspace = true
+heterowasm-legality.workspace = true
+waffle.workspace = true
+# **Declare explicitly; do not rely on waffle re-exports.** Measured reason:
+# `wasm_encoder::reencode` needs the `wasmparser` feature of `wasm-encoder`,
+# which `heterowasm-frontend` enables — so `waffle::wasm_encoder::reencode` is
+# **only visible when workspace features merge**. `cargo check -p heterowasm-wgsl`
+# alone fails to compile. That implicit coupling must be cut.
+wasm-encoder.workspace = true
+wasmparser.workspace = true
+
+[dev-dependencies]
+heterowasm-corpus.workspace = true
+heterowasm-frontend.workspace = true
+naga.workspace = true
+wat.workspace = true
+wasmprinter.workspace = true
+pollster = "1.0.1"
+wasmtime.workspace = true
+wgpu.workspace = true

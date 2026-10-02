@@ -1,0 +1,22 @@
+[package]
+name = "heterowasm-eval"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+heterowasm-address.workspace = true
+heterowasm-cfg.workspace = true
+heterowasm-corpus.workspace = true
+heterowasm-dependence.workspace = true
+heterowasm-frontend.workspace = true
+heterowasm-legality.workspace = true
+heterowasm-scev.workspace = true
+heterowasm-trace.workspace = true
+thiserror.workspace = true
+waffle.workspace = true

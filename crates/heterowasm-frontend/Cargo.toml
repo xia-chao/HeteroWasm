@@ -1,0 +1,24 @@
+[package]
+name = "heterowasm-frontend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+heterowasm-trace.workspace = true
+waffle.workspace = true
+# Preprocess: re-encode bulk-memory ops WAFFLE cannot read into a conservative
+# form it can. Versions match waffle's internals (see root Cargo.toml).
+wasmparser.workspace = true
+wasm-encoder.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# Corpus is registered only in heterowasm-corpus; this crate's tests consume it
+# instead of embedding WAT, so one case cannot drift in two places.
+heterowasm-corpus.workspace = true

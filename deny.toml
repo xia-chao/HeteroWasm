@@ -1,0 +1,59 @@
+# deny.toml — cargo-deny (licenses / advisories / duplicates / sources)
+# Run: cargo deny check
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+# Known exception: RUSTSEC-2025-0057 on fxhash 0.2.1 is an "unmaintained" notice,
+# not a disclosed vulnerability. fxhash is a direct dep of waffle 0.3.1 and we
+# cannot replace it here. It is only used as a HashMap hasher and is not a
+# security boundary for untrusted input. Remove this when waffle upgrades or we
+# switch to rustc-hash.
+ignore = ["RUSTSEC-2025-0057"]
+
+[licenses]
+version = 2
+# Allow only licenses that actually appear in the current graph. When a new
+# dependency brings another license, review then add — do not pre-stack entries
+# or real license changes lose their warning value.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    # Zlib: via foldhash, pulled by wasmprinter (binary wasm → WAT). Reviewed:
+    # OSI-approved, FSF Free/Libre, permissive — same tier as the entries above.
+    "Zlib",
+    # BSD-3-Clause: via wasmtime (host wasm execution). Checked case by case:
+    #
+    #   encoding_rs: `(Apache-2.0 OR MIT) AND BSD-3-Clause`
+    #                Both sides of AND must hold — left is already allowlisted;
+    #                the right side is this entry.
+    #
+    #   ittapi / ittapi-sys: `GPL-2.0-only OR BSD-3-Clause`
+    #                **This is OR** — choosing BSD-3-Clause takes **no GPL
+    #                obligation**; that is the point of dual licensing. Checked:
+    #                both crates sit behind wasmtime's `profiling` feature, which
+    #                this project does **not** enable (see root Cargo.toml:
+    #                wasmtime with default-features = false).
+    #
+    # Reviewed: OSI-approved, FSF Free/Libre, permissive.
+    "BSD-3-Clause",
+    # ISC: via libloading from wasmtime. Reviewed: OSI-approved, FSF Free/Libre,
+    # MIT-tier (ISC is essentially MIT with shorter wording).
+    "ISC",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

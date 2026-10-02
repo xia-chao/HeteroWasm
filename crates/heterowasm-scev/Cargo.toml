@@ -1,0 +1,19 @@
+[package]
+name = "heterowasm-scev"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+heterowasm-cfg.workspace = true
+heterowasm-trace.workspace = true
+waffle.workspace = true
+
+[dev-dependencies]
+heterowasm-corpus.workspace = true
+heterowasm-frontend.workspace = true

@@ -1,0 +1,95 @@
+# HeteroWasm workspace root.
+# Lint severity lives here: [workspace.lints] is the single "no bypass" switch.
+# Each crate inherits via [lints] workspace = true to avoid drift.
+
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.98"
+license = "Apache-2.0"
+description = "Conservative automatic WebAssembly to WebGPU heterogeneous compilation"
+
+[workspace.dependencies]
+# In-tree path deps must also set version: deny.toml bans.wildcards = "deny"
+# treats a missing version as a wildcard, which is exactly how bare path deps look.
+heterowasm-ir = { version = "0.1.0", path = "crates/heterowasm-ir" }
+heterowasm-trace = { version = "0.1.0", path = "crates/heterowasm-trace" }
+heterowasm-frontend = { version = "0.1.0", path = "crates/heterowasm-frontend" }
+heterowasm-cfg = { version = "0.1.0", path = "crates/heterowasm-cfg" }
+heterowasm-scev = { version = "0.1.0", path = "crates/heterowasm-scev" }
+heterowasm-address = { version = "0.1.0", path = "crates/heterowasm-address" }
+heterowasm-dependence = { version = "0.1.0", path = "crates/heterowasm-dependence" }
+heterowasm-legality = { version = "0.1.0", path = "crates/heterowasm-legality" }
+heterowasm-eval = { version = "0.1.0", path = "crates/heterowasm-eval" }
+heterowasm-bounds = { version = "0.1.0", path = "crates/heterowasm-bounds" }
+heterowasm-wgsl = { version = "0.1.0", path = "crates/heterowasm-wgsl" }
+heterowasm-corpus = { version = "0.1.0", path = "crates/heterowasm-corpus" }
+
+clap = { version = "4.6", features = ["derive"] }
+thiserror = "2"
+# Front-end IR. Step 1 spike: waffle 0.3.1 builds on rustc 1.98.1; dep tree is
+# anyhow/byteorder/leb128fmt/bitflags/smallvec/log/wasmparser 0.248/
+# wasm-encoder 0.248/fxhash, and re-exports the last two.
+waffle = "0.3.1"
+# **Must match waffle's internal wasmparser 0.248** (not newest). Preprocessing
+# runs **before** WAFFLE and its bytes are read immediately by WAFFLE; both ends
+# must agree or "does WAFFLE accept the re-encoded module?" becomes another
+# variable. waffle re-exports these crates but they are not on its public API
+# surface, so we declare them explicitly here.
+wasmparser = "0.248"
+# `reencode` (re-encode as-is, override only what we change) is gated by the
+# `wasmparser` feature in 0.248 — that feature only pulls wasmparser op types
+# for translation, which is exactly what we need.
+wasm-encoder = { version = "0.248", features = ["wasmparser"] }
+# WGSL reference front-end (naga is wgpu's shader front-end). Used only to
+# **independently validate** emitted text: it is not ours and does not share our
+# subset model, so it catches what our evaluator misses. Real GPU execution on
+# macOS goes through Metal (no NVIDIA). default-features off; keep metal + wgsl
+# — we only need compute and the WGSL front-end.
+wgpu = { version = "30.0.1", default-features = false, features = ["metal", "wgsl"] }
+naga = { version = "30.0.1", default-features = false, features = ["wgsl-in"] }
+# Test corpus is WAT text — far more readable than hand-built wasm binaries.
+#
+# We used to pin with ~ (wat 1.248 ↔ wasm-encoder 0.248, matching waffle) to avoid
+# a duplicate wasm-encoder in the graph. **Relaxed after §E5**: the CPU baseline
+# needs a real JIT (wasmtime), which wants a newer wat — one duplicate
+# wasm-encoder for a trustworthy perf baseline is a fair trade. cargo-deny
+# multiple-versions is warn, not deny.
+wat = "1"
+# Binary wasm → WAT text. Enables **auto-rewrite on real inputs**: disassemble
+# first, then inject the ABI import in text (wasm requires imports before
+# function bodies; patching the binary would shift every function index).
+wasmprinter = "0.258"
+# Host wasm execution. **Disable default features**: defaults pull jitdump /
+# profiling / cache, and `ittapi` (GPL-2.0-only OR BSD-3-Clause) comes from
+# there — we do not need it and should not take on that license choice. Keep
+# only the three features required to compile and run wasm.
+wasmtime = { version = "49.0.1", default-features = false, features = [
+    "cranelift",
+    "runtime",
+    "std",
+] }
+
+[workspace.lints.rust]
+# This project does not touch unsafe; any need requires a separate ADR first.
+unsafe_code = "forbid"
+# Comments only on file headers and block-level items (AGENTS.md §0.1);
+# keep missing_docs allow.
+missing_docs = "allow"
+unused_crate_dependencies = "warn"
+
+[workspace.lints.clippy]
+# Panic family forbidden on production paths: libs use Result + thiserror;
+# binaries also return Result.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+# Common borrow-conflict bypasses (AGENTS.md §1 hard rule 1).
+clone_on_ref_ptr = "deny"

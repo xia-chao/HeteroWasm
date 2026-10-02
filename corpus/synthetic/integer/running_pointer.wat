@@ -1,0 +1,22 @@
+(module
+  (memory 1 1)
+  (func $fill_running (param $v i32) (param $n i32) (result i32)
+    (local $i i32)
+    (local $p i32)
+    (local.set $p (i32.const 0))
+    (block $exit (result i32)
+      (loop $loop
+        (local.get $p)
+        (br_if $exit (i32.ge_s (local.get $i) (local.get $n)))
+        (drop)
+        (i32.store (local.get $p) (local.get $v))
+        (local.set $p (i32.add (local.get $p) (i32.const 4)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $loop)
+      )
+      unreachable
+    )
+  )
+  (export "main" (func $fill_running))
+  (export "mem" (memory 0))
+)
