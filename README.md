@@ -1,12 +1,14 @@
 # HeteroWasm
 
-**The slow loop stays in Wasm. The heavy one runs on the GPU.**
+HeteroWasm is a conservative compiler for ordinary WebAssembly. It finds data-parallel loops it can prove are safe to run together, turns only those loops into a WebGPU compute shader, and keeps the original Wasm program as the CPU path.
 
-You already have a WebAssembly module. HeteroWasm compiles it, runs the loops that pay
-for a dispatch, and leaves the rest on the CPU. You do not write a second program in
-WGSL, and you do not connect wasmtime to wgpu yourself.
+The compiler is still under development. The rule is already in place: a loop leaves the CPU only when it can be shown safe to run together, and the original Wasm program stays as the CPU path. A second program in WGSL is not part of that path.
 
-On an Apple M2, a degree-64 integer polynomial of 65536 elements:
+## Where the work stands
+
+The GPU path measured so far is Metal, on an Apple M2. A heavy integer loop is faster there. Lighter loops stay on the CPU. That line moves only when a new measurement says so.
+
+Degree-64 integer polynomial, 65536 elements, `--repeat 5`, memory restored before each timed call:
 
 | | time |
 | --- | --- |
@@ -14,36 +16,33 @@ On an Apple M2, a degree-64 integer polynomial of 65536 elements:
 | GPU | 0.5832 ms |
 | | **5.45× faster**, memory matches |
 
-An earlier run of the same loop was 3.69×. The ratio moves. The result stayed faster,
-and the memories matched both times. If they do not match, `bench` prints no ratio.
+An earlier run of the same loop was 3.69×. The ratio moves. The memories matched both times. If they do not match, no ratio is reported.
 
-The measured GPU is Metal.
+Same machine, same protocol, `n = 65536`:
 
----
+| Loop | CPU | GPU | What the compiler does |
+| --- | --- | --- | --- |
+| 16-step Horner | 0.3300 ms | 0.4753 ms | stays on the CPU, 1.44× slower on the GPU |
+| 32-step Horner | 0.9389 ms | 0.5267 ms | offloaded, 1.78× faster |
+| degree-64 polynomial | 3.1786 ms | 0.5832 ms | offloaded, 5.45× faster |
 
-## What you get
+A later run of the 32-step Horner was 1.37× faster. Under 32 multiplies in the body, or under 65536 trips, the loop stays on the CPU. At `n = 32768` the 32-step Horner was still slower.
 
-One command compiles. One command runs. One command tells you whether the GPU was
-worth it.
+## What this snapshot does not move
 
-```text
-out/
-  original.wasm     the module you passed in
-  rewritten.wasm    the same program, with the heavy loop turned into a host call
-  poly64-1-3.wgsl   the compute kernel that call runs
-  kernels.json      which call uses which kernel
-```
+The loops behind those numbers are integer load, store, add, subtract, and multiply, in one loop.
 
-`run` needs nothing else installed beside the `heterowasm` binary. `bench` runs the
-original module and the rewritten one, restores memory before every timed call, and
-only then prints a verdict.
+These stay on the CPU in this snapshot:
 
-A loop that would be slower stays in `original.wasm`. A loop that cannot be shown safe
-stays there too. You can always run that file and ignore the GPU path.
+- floating-point arithmetic
+- division, remainder, shifts, bitwise operations
+- a reduction such as `s += in[i]`
+- nested loops, indirect indexes, unaligned access
+- fewer than 32 multiplies, or fewer than 65536 trips
 
----
+A short loop is cheaper on the CPU.
 
-## Reproduce the number
+## Reproduce the measurement
 
 Rust 1.98 or newer.
 
@@ -54,81 +53,9 @@ heterowasm compile corpus/synthetic/intensity/poly64.wat --output out
 heterowasm bench out --entry main --arg 0 --arg 524288 --arg 65536 --repeat 5
 ```
 
-```text
-correctness   CPU and GPU memory **match word-for-word** ✓
-CPU           3.1786 ms/run
-GPU           0.5832 ms/run
-verdict       GPU **5.45× faster**
-```
+The three arguments are the output byte offset, the input byte offset, and the element count. Those two buffers do not overlap. `--repeat 5` is the number behind the table. The loop writes `out[i]` from a polynomial in `in[i]`.
 
-The three arguments are the output byte offset, the input byte offset, and the element
-count. Those two buffers do not overlap. `--repeat 5` is the number to trust. A single
-run is not.
-
-The source of that loop is `corpus/synthetic/intensity/poly64.wat`: one function, one
-loop, `out[i]` written from a polynomial in `in[i]`.
-
----
-
-## Point it at your module
-
-```bash
-heterowasm compile your-module.wasm --output out
-heterowasm bench out --entry your_export --arg <out> --arg <in> --arg <n> --repeat 5
-```
-
-WAT and wasm both compile. The loop HeteroWasm can take off the CPU looks like this:
-
-```text
-for i in 0..n {
-    out[i] = a long integer polynomial in in[i]
-}
-```
-
-`n` is an argument. The buffers are either exactly the same range (in place) or fully
-apart. A partial overlap is rejected. The message starts with `spec §15 rejects GPU`.
-Parallel iterations would see the original memory. The Wasm loop would see values
-written by earlier iterations. Those are not the same answer.
-
----
-
-## When it is faster
-
-A dispatch costs a few tenths of a millisecond before the GPU does useful work. The
-CPU time has to clear that. Same machine, same protocol, `n = 65536`:
-
-| Loop | CPU | GPU | What happens |
-| --- | --- | --- | --- |
-| 16-step Horner | 0.3300 ms | 0.4753 ms | stays on the CPU, 1.44× slower on the GPU |
-| 32-step Horner | 0.9389 ms | 0.5267 ms | offloaded, 1.78× faster |
-| degree-64 polynomial | 3.1786 ms | 0.5832 ms | offloaded, 5.45× faster |
-
-A later run of the 32-step Horner was 1.37× faster. Still a win. The tool does not
-lower the bar to chase one ratio.
-
-Under 32 multiplies in the body, the loop stays on the CPU even at this length. Under
-65536 trips, it stays on the CPU even for the 32-step Horner: at `n = 32768` that
-loop was still slower. Copies, stencils, and short convolutions are on that side of
-the table. `bench` is how you place a module that is not listed here.
-
----
-
-## What stays on the CPU
-
-The fast path above is integer load, store, add, subtract, and multiply, in one loop.
-
-These stay on the CPU:
-
-- floating-point arithmetic
-- division, remainder, shifts, bitwise operations
-- a reduction such as `s += in[i]`
-- nested loops, indirect indexes, unaligned access
-- fewer than 32 multiplies, or fewer than 65536 trips
-
-That is a limit of this release, not a hint that a short loop was forgotten. A short
-loop is cheaper on the CPU. Shipping it to the GPU would make your program slower.
-
----
+The buffers are either exactly the same range, in place, or fully apart. A partial overlap is rejected. Parallel iterations would see the original memory. The Wasm loop would see values written by earlier iterations.
 
 ## License
 
