@@ -59,4 +59,4 @@ The buffers are either exactly the same range, in place, or fully apart. A parti
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
