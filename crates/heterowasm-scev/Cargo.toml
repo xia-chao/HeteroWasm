@@ -21,3 +21,4 @@ waffle.workspace = true
 [dev-dependencies]
 heterowasm-corpus.workspace = true
 heterowasm-frontend.workspace = true
+wat.workspace = true

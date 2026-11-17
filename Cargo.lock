@@ -941,6 +941,7 @@ dependencies = [
  "heterowasm-frontend",
  "heterowasm-trace",
  "waffle",
+ "wat",
 ]
 
 [[package]]

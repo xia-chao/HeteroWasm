@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use waffle::{FunctionBody, Value, ValueDef};
+use waffle::{FunctionBody, Operator, Value, ValueDef};
 
 use crate::canonical::canonical_value;
 
@@ -82,6 +82,8 @@ pub struct ScalarEvolution {
     pub(crate) invariant_params: HashSet<Value>,
 
     pub(crate) carried_non_affine: Vec<Value>,
+
+    pub(crate) memory_recurrence_addresses: Vec<Value>,
 }
 
 impl ScalarEvolution {
@@ -122,6 +124,10 @@ impl ScalarEvolution {
         if self.is_induction(body, canonical) {
             return true;
         }
+
+        if self.is_memory_recurrence_load(body, canonical) {
+            return true;
+        }
         let Some(ValueDef::Operator(_, args, _)) = body.values.get(canonical) else {
             return false;
         };
@@ -129,6 +135,33 @@ impl ScalarEvolution {
         operands
             .iter()
             .any(|operand| self.depends_on_induction(body, *operand, depth - 1))
+    }
+
+
+    fn is_memory_recurrence_load(&self, body: &FunctionBody, canonical: Value) -> bool {
+        if self.memory_recurrence_addresses.is_empty() {
+            return false;
+        }
+        let Some(ValueDef::Operator(operator, args, _)) = body.values.get(canonical) else {
+            return false;
+        };
+        if !matches!(
+            operator,
+            Operator::I32Load { .. }
+                | Operator::I64Load { .. }
+                | Operator::I32Load8S { .. }
+                | Operator::I32Load8U { .. }
+                | Operator::I32Load16S { .. }
+                | Operator::I32Load16U { .. }
+        ) {
+            return false;
+        }
+        let Some(&address) = body.arg_pool[*args].first() else {
+            return false;
+        };
+        self.memory_recurrence_addresses
+            .iter()
+            .any(|recorded| crate::memory_recurrence::same_address(body, *recorded, address, 8))
     }
 
 

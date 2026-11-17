@@ -328,3 +328,88 @@ fn stores_a_load_of(body: &FunctionBody, address: Value, stored: Value) -> bool 
             })
     })
 }
+
+
+#[test]
+fn spilled_recurrence_should_be_recognized_from_the_exit_condition() -> TestResult {
+    let bytes = wat::parse_str(
+        r#"(module
+             (memory 1 1)
+             (func (export "run") (param $n i32)
+               (i32.store (i32.const 0) (i32.const 0))
+               (block $exit
+                 (loop $loop
+                   (br_if $exit (i32.ge_u (i32.load (i32.const 0)) (local.get $n)))
+                   (i32.store (i32.const 64)
+                     (i32.add (i32.load (i32.const 64)) (i32.const 7)))
+                   (i32.store (i32.const 0)
+                     (i32.add (i32.load (i32.const 0)) (i32.const 1)))
+                   (i32.store (i32.const 96) (i32.load (i32.const 32)))
+                   (br $loop)))))"#,
+    )?;
+    let mut module = load_module(&bytes, &Trace::silent())?;
+    expand_all_bodies(&mut module, &Trace::silent())?;
+    let trace = Trace::silent();
+    for decl in module.funcs.values() {
+        let FuncDecl::Body(_, _, body) = decl else {
+            continue;
+        };
+        let flow = ControlFlow::analyze(body, &trace);
+        let Some(natural_loop) = flow.natural_loops(body, &trace).into_iter().next() else {
+            continue;
+        };
+        let evolution = ScalarEvolution::analyze(body, &natural_loop, &trace);
+        assert!(
+            evolution.recovered_from_memory() >= 1,
+            "the spilled counter must be recovered"
+        );
+        assert!(!evolution.induction_variables().is_empty());
+
+        let mut seen_recurrence_load = false;
+        let mut seen_other_load = false;
+        for value in body.values.iter() {
+            let Some(ValueDef::Operator(Operator::I32Load { .. }, args, _)) =
+                body.values.get(value)
+            else {
+                continue;
+            };
+            let Some(&address) = body.arg_pool[*args].first() else {
+                continue;
+            };
+            let depends = evolution.depends_on_induction(body, value, 8);
+            match constant_slot(body, address) {
+                Some(0) => {
+                    assert!(
+                        depends,
+                        "a load from the spilled slot must depend on the induction"
+                    );
+                    seen_recurrence_load = true;
+                }
+                Some(32) => {
+                    assert!(
+                        !depends,
+                        "a read-only slot must not depend on the induction"
+                    );
+                    seen_other_load = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(seen_recurrence_load, "fixture must load the spilled slot");
+        assert!(
+            seen_other_load,
+            "fixture must load another slot as a negative control"
+        );
+        return Ok(());
+    }
+    Err("fixture must contain an expanded loop".into())
+}
+
+
+fn constant_slot(body: &FunctionBody, value: Value) -> Option<i64> {
+    let canonical = crate::canonical_value(body, value);
+    match body.values.get(canonical)? {
+        ValueDef::Operator(Operator::I32Const { value }, _, _) => Some(i64::from(*value)),
+        _ => None,
+    }
+}
