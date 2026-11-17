@@ -557,3 +557,43 @@ fn mask_add_limit_keeps_the_index_span() {
     );
     assert!(hi >= 200_192, "the source span must be kept as well");
 }
+
+
+#[test]
+fn missing_artifact_directory_reports_the_read_error() {
+    let dir = std::env::temp_dir().join("heterowasm-runtime-missing-artifacts");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Err(error) = Runtime::load(&dir, quiet()) else {
+        panic!("a missing artifact directory must not load");
+    };
+    assert!(
+        matches!(error, RuntimeError::Read { .. }),
+        "expected a read error, got {error}"
+    );
+    assert!(
+        error.to_string().contains("kernels.json"),
+        "the error must name the missing file, got {error}"
+    );
+}
+
+
+#[test]
+fn caller_import_failure_is_reported_as_an_import_error() -> Result<(), Box<dyn std::error::Error>>
+{
+    const WAT: &str = r#"(module
+      (import "env" "answer" (func $answer (result i32)))
+      (memory (export "mem") 1)
+      (func (export "run") (result i32) (call $answer))
+    )"#;
+    let dir = fixture("caller-imports-failure", KERNEL_WGSL, KERNEL_MANIFEST, WAT);
+    let Err(error) = Runtime::load_with(&dir, quiet(), |_engine, _linker, _module| {
+        Err(RuntimeError::Import {
+            reason: String::from("boom"),
+        })
+    }) else {
+        panic!("a failing caller import must not load");
+    };
+    assert!(matches!(error, RuntimeError::Import { .. }), "got {error}");
+    assert!(error.to_string().contains("boom"), "got {error}");
+    Ok(())
+}
