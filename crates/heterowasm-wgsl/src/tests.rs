@@ -8,6 +8,7 @@ use crate::fusion::{
 };
 use crate::ir::header_parameter_indices;
 use crate::single::{offload_loop, plan_first_gpu_loop};
+use crate::types::LoopRegion;
 use heterowasm_address::AddressRecovery;
 use heterowasm_bounds::LoopExtent;
 use heterowasm_cfg::ControlFlow;
@@ -1948,7 +1949,18 @@ fn offload_loop_passes_encoding_with_live_out_params() -> TestResult {
     let (func, header, exit, members, fields) = plan.ok_or("no extractable loop found")?;
 
 
-    offload_loop(&mut module, func, header, exit, &members, &fields, 0, None)?;
+    offload_loop(
+        &mut module,
+        func,
+        LoopRegion {
+            header,
+            exit,
+            members: &members,
+        },
+        &fields,
+        0,
+        None,
+    )?;
     println!(
         "\nrewrite skeleton applied: header={header:?} exit={exit:?} members={members:?} \
              (back-edges removed, terminators rewritten, edge table rebuilt)"
@@ -2023,9 +2035,11 @@ fn rewritten_wasm_runs_on_gpu_and_matches_cpu() -> TestResult {
     offload_loop(
         &mut module,
         plan.func,
-        plan.header,
-        plan.exit,
-        &plan.members,
+        LoopRegion {
+            header: plan.header,
+            exit: plan.exit,
+            members: &plan.members,
+        },
         &plan.kernel.fields,
         0,
         None,
@@ -2281,9 +2295,11 @@ fn bounds_fallback_is_wired_to_cpu_execution() -> TestResult {
     offload_loop(
         &mut parsed,
         func,
-        header,
-        exit,
-        &members,
+        LoopRegion {
+            header,
+            exit,
+            members: &members,
+        },
         &kernel.fields,
         0,
         None,
@@ -2457,18 +2473,20 @@ fn bounds_fallback_is_wired_to_cpu_execution() -> TestResult {
 
 #[test]
 fn corpus_cases_survive_automatic_rewrite() -> TestResult {
+    gpu_test_stack::run(corpus_cases_survive_automatic_rewrite_inner)
+}
 
-    let handle = std::thread::Builder::new()
-        .stack_size(16 * 1024 * 1024)
-        .spawn(|| {
+mod gpu_test_stack {
+    use super::TestResult;
 
-            corpus_cases_survive_automatic_rewrite_inner().map_err(|error| error.to_string())
-        })
-        .map_err(|error| format!("failed to spawn thread: {error}"))?;
-    handle
-        .join()
-        .map_err(|_| "deep-recursion test thread panicked".to_string())?
-        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
+    pub(super) fn run(test: fn() -> TestResult) -> TestResult {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || test().map_err(|error| error.to_string()))?
+            .join()
+            .map_err(|_| "GPU test thread panicked".to_string())?
+            .map_err(Into::into)
+    }
 }
 
 fn corpus_cases_survive_automatic_rewrite_inner() -> TestResult {
@@ -2524,9 +2542,11 @@ fn corpus_cases_survive_automatic_rewrite_inner() -> TestResult {
         match offload_loop(
             &mut module,
             func,
-            header,
-            exit,
-            &members,
+            LoopRegion {
+                header,
+                exit,
+                members: &members,
+            },
             &kernel.fields,
             0,
             None,
@@ -3341,252 +3361,178 @@ fn fusion_closes_the_loop_with_evidence() -> TestResult {
 
 #[test]
 fn binary_wasm_input_survives_automatic_rewrite() -> TestResult {
+    gpu_test_stack::run(binary_wasm_input_survives_automatic_rewrite_inner)
+}
+
+fn binary_wasm_input_survives_automatic_rewrite_inner() -> TestResult {
     use super::conformance::gpu;
-    use waffle::{ConstVal, InterpContext};
 
     let engine = wasmtime::Engine::default();
-    let mut checked = 0_usize;
+    let trace = Trace::silent();
+    let case = CASES
+        .iter()
+        .find(|case| case.name == "intensity/poly64")
+        .ok_or("case is not registered")?;
+    let original_binary = case.to_wasm()?;
+    assert!(
+        original_binary.starts_with(b"\0asm"),
+        "expected binary Wasm"
+    );
+    let disassembled = wasmprinter::print_bytes(&original_binary)?;
+    assert!(disassembled.contains("(module"), "disassembly failed");
 
+    let mut probe = load_module(&original_binary, &trace)?;
+    expand_all_bodies(&mut probe, &trace)?;
+    let shape = plan_gpu_arity(&probe, &trace)?;
+    let source_bytes = wat::parse_str(&disassembled)?;
+    let injected_bytes =
+        inject_dispatch_import(&source_bytes, shape.fields, shape.results, &trace)?;
+    let mut module = load_module(&injected_bytes, &trace)?;
+    expand_all_bodies(&mut module, &trace)?;
+    let kernel = plan_first_gpu_loop(&module, &trace)?.kernel;
+    assert_eq!(rewrite_module_for_gpu(&mut module, &trace)?.len(), 1);
+    let rewritten_module = wasmtime::Module::new(&engine, &module.to_wasm_bytes()?)?;
+    let arguments = (0_i32, 524_288_i32, 65_536_i32);
+    let seed: Vec<u8> = (0..1_048_576)
+        .map(|index| (index * 37 + 11) as u8)
+        .collect();
 
-    for name in ["pointwise/vector_add"] {
-        let case = CASES
-            .iter()
-            .find(|case| case.name == name)
-            .ok_or("case is not registered")?;
+    let reference_module = wasmtime::Module::new(&engine, &original_binary)?;
+    let mut reference_store = wasmtime::Store::new(&engine, ());
+    let reference_instance = wasmtime::Instance::new(&mut reference_store, &reference_module, &[])?;
+    let reference_memory = reference_instance
+        .get_memory(&mut reference_store, "mem")
+        .ok_or("missing reference memory")?;
+    reference_memory.write(&mut reference_store, 0, &seed)?;
+    reference_instance
+        .get_typed_func::<(i32, i32, i32), ()>(&mut reference_store, "main")?
+        .call(&mut reference_store, arguments)?;
 
-
-        let original_binary = case.to_wasm()?;
-        assert!(
-            std::str::from_utf8(&original_binary)
-                .map(|text| !text.trim_start().starts_with("(module"))
-                .unwrap_or(true),
-            "{name}: this must be a binary, otherwise we are not testing the binary path"
-        );
-
-
-        let disassembled = wasmprinter::print_bytes(&original_binary)?;
-        assert!(
-            disassembled.contains("(module"),
-            "{name}: disassembly failed"
-        );
-
-
-        let arity = {
-            let mut probe = load_module(&original_binary, &Trace::silent())?;
-            expand_all_bodies(&mut probe, &Trace::silent())?;
-            plan_gpu_arity(&probe, &Trace::silent())?.fields
-        };
-
-        let source_bytes = wat::parse_str(&disassembled)?;
-        let injected_bytes = inject_dispatch_import(&source_bytes, arity, 0, &Trace::silent())?;
-        let mut module = load_module(&injected_bytes, &Trace::silent())?;
-        expand_all_bodies(&mut module, &Trace::silent())?;
-        plan_first_gpu_loop(&module, &Trace::silent())?;
-
-        let mut kernels = Vec::new();
-        let mut target = None;
-        for func in module.funcs.iter() {
-            let Some(body) = module.funcs[func].body() else {
-                continue;
-            };
-            let trace = Trace::silent();
-            for natural_loop in ControlFlow::analyze(body, &trace).natural_loops(body, &trace) {
-                let evolution = ScalarEvolution::analyze(body, &natural_loop, &trace);
-                let recovery = AddressRecovery::analyze(body, &evolution, &trace);
-                let accesses: Vec<_> = recovery
-                    .accesses()
-                    .iter()
-                    .filter(|access| natural_loop.blocks.contains(&access.block))
-                    .cloned()
-                    .collect();
-                let extent = LoopExtent::analyze(body, &natural_loop, &evolution);
-                if let Ok(kernel) = lower(
-                    body,
-                    &natural_loop,
-                    &accesses,
-                    &evolution,
-                    extent,
-                    64,
-                    &trace,
-                ) {
-                    let indices =
-                        header_parameter_indices(body, natural_loop.header, &kernel.fields)?;
-                    let members = natural_loop.blocks.clone();
-                    let header = natural_loop.header;
-                    kernels.push((func, header, members, indices, kernel));
-                    target = Some(target.unwrap_or((func, header)));
-                }
-            }
-            break;
-        }
-        assert!(!kernels.is_empty(), "{name}: no emittable loop found");
-
-        rewrite_module_for_gpu(&mut module, &Trace::silent())?;
-        let rewritten = module.to_wasm_bytes()?;
-        let rewritten_module = wasmtime::Module::new(&engine, &rewritten)?;
-
-
-        let mut params = vec![8_u32; kernels[0].4.fields.len()];
-        for (slot, value) in params.iter_mut().enumerate().skip(1) {
-            *value = (slot as u32) * 64;
-        }
-
-
-        let memory_bytes = 65_536_usize;
-        let seed: Vec<u8> = (0..memory_bytes)
-            .map(|index| (index * 37 + 11) as u8)
-            .collect();
-        let mut original_module = load_module(&original_binary, &Trace::silent())?;
-        expand_all_bodies(&mut original_module, &Trace::silent())?;
-
-
-        let (entry_func, param_count) = original_module
-            .funcs
-            .iter()
-            .find_map(|f| {
-                original_module.funcs[f]
-                    .body()
-                    .map(|body| (f, body.n_params))
-            })
-            .ok_or("missing function body")?;
-        let mut full_args = vec![ConstVal::I32(0); param_count];
-        for (index, value) in params.iter().enumerate() {
-            if index + 1 < full_args.len() {
-                full_args[index + 1] = ConstVal::I32(*value);
-            }
-        }
-        if let Some(last) = full_args.last_mut() {
-            *last = ConstVal::I32(8);
-        }
-
-        let mut context = InterpContext::new(&original_module)?;
-        let memory = original_module
-            .memories
-            .iter()
-            .next()
-            .ok_or("case must contain memory")?;
-        context.memories[memory].data.copy_from_slice(&seed);
-        let call_result = context.call(&original_module, entry_func, &full_args);
-        if call_result.ok().is_err() {
-            println!("  {name}: original binary trapped, skipped");
-            continue;
-        }
-        let reference = context.memories[memory].data.clone();
-
-
-        struct Host {
-            context: gpu::GpuContext,
-            compiled: gpu::Compiled,
-            kernel: Kernel,
-        }
-        let kernel = kernels[0].4.clone();
-        let gpu_context = gpu::GpuContext::new().map_err(|error| error.to_string())?;
-        let compiled = gpu_context
-            .compile(&kernel)
-            .map_err(|error| error.to_string())?;
-
-        let mut linker = wasmtime::Linker::new(&engine);
-        linker.func_new(
-            "heterowasm",
-            "__hw_dispatch",
-            wasmtime::FuncType::new(
-                &engine,
-                (0..arity + 1).map(|_| wasmtime::ValType::I32),
-                std::iter::empty::<wasmtime::ValType>(),
-            ),
-            |mut caller: wasmtime::Caller<'_, Host>,
-             incoming: &[wasmtime::Val],
-             _results: &mut [wasmtime::Val]|
-             -> Result<(), wasmtime::Error> {
-                let memory = caller
-                    .get_export("mem")
-                    .and_then(|item| item.into_memory())
-                    .ok_or_else(|| wasmtime::Error::msg("missing memory export"))?;
-                let data = memory.data(&caller).to_vec();
-                let host = caller.data();
-                let mut params: Vec<u32> = incoming
-                    .iter()
-                    .map(|value| value.i32().unwrap_or(0) as u32)
-                    .collect();
-
-                params.pop();
-                let workspace = host
-                    .context
-                    .workspace(data.len(), params.len() * 4)
-                    .map_err(|error| wasmtime::Error::msg(error.to_string()))?;
-                let produced = host
-                    .context
-                    .run_in(&host.compiled, &host.kernel, &workspace, &data, &params)
-                    .map_err(|error| wasmtime::Error::msg(error.to_string()))?;
-                memory.write(&mut caller, 0, &produced)?;
-                Ok(())
-            },
-        )?;
-
-        let mut store = wasmtime::Store::new(
-            &engine,
-            Host {
-                context: gpu_context,
-                compiled,
-                kernel,
-            },
-        );
-        let instance = linker.instantiate(&mut store, &rewritten_module)?;
-        let entry = instance
-            .get_func(&mut store, "main")
-            .ok_or("missing main")?;
-        let memory = instance
-            .get_memory(&mut store, "mem")
-            .ok_or("missing memory")?;
-        memory.write(&mut store, 0, &seed)?;
-        let values: Vec<wasmtime::Val> = full_args
-            .iter()
-            .map(|value| {
-                let raw = match value {
-                    ConstVal::I32(v) => *v as i32,
-                    _ => 0,
-                };
-                wasmtime::Val::I32(raw)
-            })
-            .collect();
-        entry.call(&mut store, &values, &mut [])?;
-        let produced = memory.data(&store).to_vec();
-
-        let mismatches = reference
-            .iter()
-            .zip(produced.iter())
-            .filter(|(left, right)| left != right)
-            .count();
-        println!(
-                "  {name}: binary {} bytes → disasm → inject → rewrite → {} bytes; {mismatches} mismatches vs original binary",
-                original_binary.len(),
-                rewritten.len()
-            );
-        assert_eq!(
-            mismatches, 0,
-            "{name}: binary-path result mismatches original execution"
-        );
-        checked += 1;
+    struct Host {
+        context: gpu::GpuContext,
+        compiled: gpu::Compiled,
+        kernel: Kernel,
+        dispatches: usize,
     }
-
-    assert!(checked > 0, "at least one binary input must succeed");
+    let context = gpu::GpuContext::new().map_err(|error| error.to_string())?;
+    let compiled = context
+        .compile(&kernel)
+        .map_err(|error| error.to_string())?;
+    let mut linker = wasmtime::Linker::new(&engine);
+    linker.func_new(
+        "heterowasm",
+        "__hw_dispatch",
+        wasmtime::FuncType::new(
+            &engine,
+            (0..shape.fields + 1).map(|_| wasmtime::ValType::I32),
+            std::iter::empty::<wasmtime::ValType>(),
+        ),
+        |mut caller: wasmtime::Caller<'_, Host>, incoming, _results| {
+            let memory = caller
+                .get_export("mem")
+                .and_then(|item| item.into_memory())
+                .ok_or_else(|| wasmtime::Error::msg("missing memory export"))?;
+            let host = caller.data();
+            let data = memory.data(&caller);
+            let params: Vec<u32> = incoming[..host.kernel.fields.len()]
+                .iter()
+                .map(|value| value.i32().unwrap_or(0) as u32)
+                .collect();
+            let workspace = host
+                .context
+                .workspace(data.len(), params.len() * 4)
+                .map_err(|error| wasmtime::Error::msg(error.to_string()))?;
+            let produced = host
+                .context
+                .run_in(&host.compiled, &host.kernel, &workspace, data, &params)
+                .map_err(|error| wasmtime::Error::msg(error.to_string()))?;
+            memory.write(&mut caller, 0, &produced)?;
+            caller.data_mut().dispatches += 1;
+            Ok(())
+        },
+    )?;
+    let mut store = wasmtime::Store::new(
+        &engine,
+        Host {
+            context,
+            compiled,
+            kernel,
+            dispatches: 0,
+        },
+    );
+    let instance = linker.instantiate(&mut store, &rewritten_module)?;
+    let memory = instance
+        .get_memory(&mut store, "mem")
+        .ok_or("missing memory")?;
+    memory.write(&mut store, 0, &seed)?;
+    instance
+        .get_typed_func::<(i32, i32, i32), ()>(&mut store, "main")?
+        .call(&mut store, arguments)?;
+    assert_eq!(
+        store.data().dispatches,
+        1,
+        "binary input must dispatch once"
+    );
+    assert!(
+        memory.data(&store) == reference_memory.data(&reference_store),
+        "binary-path result mismatches original execution"
+    );
     Ok(())
 }
 
+mod fusion_fixture {
+    pub(super) const MEMORY_PAGES: usize = 24;
+
+    pub(super) fn binary() -> Result<Vec<u8>, wat::Error> {
+        let mix = |input: &str| {
+            (1..=32).fold(input.to_owned(), |value, step| {
+                format!("(i32.add (i32.mul {value} (i32.const 3)) (i32.const {step}))")
+            })
+        };
+        let producer = mix(
+            "(i32.add (i32.load (i32.add (local.get $a) (i32.mul (local.get $i) (i32.const 4)))) (i32.load (i32.add (local.get $b) (i32.mul (local.get $i) (i32.const 4)))))",
+        );
+        let consumer =
+            mix("(i32.load (i32.add (local.get $x) (i32.mul (local.get $i) (i32.const 4))))");
+        wat::parse_str(format!(
+            r#"(module
+                (memory (export "mem") {MEMORY_PAGES})
+                (func (export "main") (param $a i32) (param $b i32) (param $c i32)
+                    (param $x i32) (param $y i32) (param $z i32) (param $n i32)
+                  (local $i i32)
+                  (block $producer_end (loop $producer
+                    (br_if $producer_end (i32.ge_s (local.get $i) (local.get $n)))
+                    (i32.store (i32.add (local.get $x) (i32.mul (local.get $i) (i32.const 4)))
+                        {producer})
+                    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                    (br $producer)))
+                  (local.set $i (i32.const 0))
+                  (block $consumer_end (loop $consumer
+                    (br_if $consumer_end (i32.ge_s (local.get $i) (local.get $n)))
+                    (i32.store (i32.add (local.get $y) (i32.mul (local.get $i) (i32.const 4)))
+                        {consumer})
+                    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                    (br $consumer)))))
+            "#
+        ))
+    }
+}
+
+
 #[test]
 fn fused_rewrite_matches_original_program() -> TestResult {
+    gpu_test_stack::run(fused_rewrite_matches_original_program_inner)
+}
+
+fn fused_rewrite_matches_original_program_inner() -> TestResult {
     use super::conformance::gpu;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use waffle::{ConstVal, InterpContext};
 
-    let case = CASES
-        .iter()
-        .find(|case| case.name == "fusable/chain2")
-        .ok_or("case is not registered")?;
     let engine = wasmtime::Engine::default();
 
 
-    let reference_binary = case.to_wasm()?;
+    let reference_binary = fusion_fixture::binary()?;
     let mut reference_module = load_module(&reference_binary, &Trace::silent())?;
     expand_all_bodies(&mut reference_module, &Trace::silent())?;
     let param_count = reference_module
@@ -3824,21 +3770,20 @@ fn fused_rewrite_matches_original_program() -> TestResult {
 
 #[test]
 fn end_to_end_fusion_versus_unfused() -> TestResult {
+    gpu_test_stack::run(end_to_end_fusion_versus_unfused_inner)
+}
+
+fn end_to_end_fusion_versus_unfused_inner() -> TestResult {
     use super::conformance::gpu;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
     use waffle::ConstVal;
 
-
-    const N: u32 = 40_000;
+    const N: u32 = 65_536;
     const ROUNDS: usize = 11;
     let engine = wasmtime::Engine::default();
 
-    let case = CASES
-        .iter()
-        .find(|case| case.name == "fusable/chain2")
-        .ok_or("case is not registered")?;
-    let original_binary = case.to_wasm()?;
+    let original_binary = fusion_fixture::binary()?;
     let disassembled = wasmprinter::print_bytes(&original_binary)?;
     let arity = {
         let mut probe = load_module(&original_binary, &Trace::silent())?;
@@ -3947,7 +3892,7 @@ fn end_to_end_fusion_versus_unfused() -> TestResult {
             _ => wasmtime::Val::I32(0),
         })
         .collect();
-    let seed: Vec<u8> = (0..(1 << 20))
+    let seed: Vec<u8> = (0..fusion_fixture::MEMORY_PAGES * 65_536)
         .map(|index| (index * 37 + 11) as u8)
         .collect();
 
@@ -4195,11 +4140,7 @@ fn locate_two_dispatch_trap() -> TestResult {
 
     const N: u32 = 8;
     let engine = wasmtime::Engine::default();
-    let case = CASES
-        .iter()
-        .find(|case| case.name == "fusable/chain2")
-        .ok_or("case is not registered")?;
-    let original_binary = case.to_wasm()?;
+    let original_binary = fusion_fixture::binary()?;
     let disassembled = wasmprinter::print_bytes(&original_binary)?;
     let arity = {
         let mut probe = load_module(&original_binary, &Trace::silent())?;
@@ -4416,13 +4357,9 @@ fn locate_two_dispatch_trap() -> TestResult {
                 .map(|(index, _)| index)
                 .collect();
             println!("**ran successfully**; {mismatches} mismatches vs original → at {where_:?}");
-            println!(
-                "  X(48) reference {:?} got {:?}\n  Y(64) reference {:?} got {:?}",
-                &reference[48..56],
-                &produced[48..56],
-                &reference[64..72],
-                &produced[64..72]
-            );
+            assert_eq!(calls, 2, "rewritten entry must dispatch twice");
+            assert_eq!(reference.len(), produced.len(), "memory lengths must match");
+            assert_eq!(mismatches, 0, "rewritten memory must match the CPU result");
         }
         Err(error) => {
             panic!("**two-dispatch wasm trapped**: {error:?}");
@@ -4730,9 +4667,11 @@ fn scale_running_pointer_gpu_matches_cpu_including_exit_value() -> TestResult {
     offload_loop(
         &mut module,
         plan.func,
-        plan.header,
-        plan.exit,
-        &plan.members,
+        LoopRegion {
+            header: plan.header,
+            exit: plan.exit,
+            members: &plan.members,
+        },
         &plan.kernel.fields,
         0,
         None,
@@ -4901,9 +4840,11 @@ fn running_pointer_gpu_return_matches_cpu() -> TestResult {
     offload_loop(
         &mut module,
         plan.func,
-        plan.header,
-        plan.exit,
-        &plan.members,
+        LoopRegion {
+            header: plan.header,
+            exit: plan.exit,
+            members: &plan.members,
+        },
         &plan.kernel.fields,
         0,
         None,

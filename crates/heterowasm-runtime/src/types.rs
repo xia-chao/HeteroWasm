@@ -93,3 +93,15 @@ pub struct FieldMapping {
     pub slot: usize,
     pub wasm_param: usize,
 }
+
+
+pub(crate) struct DispatchMemory<'a> {
+    pub(crate) limit: usize,
+    pub(crate) parts: &'a [(usize, Vec<u8>)],
+}
+
+
+pub(crate) struct DispatchReadback {
+    pub(crate) regions: Vec<(usize, Vec<u8>)>,
+    pub(crate) exit_values: Vec<u32>,
+}

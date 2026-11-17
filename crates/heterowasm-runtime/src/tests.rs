@@ -448,8 +448,9 @@ fn resolved_empty_fields_are_zero_parameters() {
     let spec =
         super::manifest::parse_kernel(TEXT, std::path::Path::new("k.json"), "k", String::new())
             .expect("parse zero-field manifest");
-    assert_eq!(super::host::import_arity(&[spec.clone()]), 1);
-    assert_eq!(super::host::import_results(&[spec]), 1);
+    let specs = std::slice::from_ref(&spec);
+    assert_eq!(super::host::import_arity(specs), 1);
+    assert_eq!(super::host::import_results(specs), 1);
 }
 
 

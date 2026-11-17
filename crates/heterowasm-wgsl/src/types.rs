@@ -1,4 +1,11 @@
-use waffle::Value;
+use waffle::{Block, Value};
+
+
+pub(crate) struct LoopRegion<'a> {
+    pub(crate) header: Block,
+    pub(crate) exit: Block,
+    pub(crate) members: &'a [Block],
+}
 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

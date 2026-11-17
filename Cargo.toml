@@ -68,7 +68,7 @@ wasmprinter = "0.258"
 # profiling / cache, and `ittapi` (GPL-2.0-only OR BSD-3-Clause) comes from
 # there — we do not need it and should not take on that license choice. Keep
 # only the three features required to compile and run wasm.
-wasmtime = { version = "49.0.1", default-features = false, features = [
+wasmtime = { version = "49.0.5", default-features = false, features = [
     "cranelift",
     "runtime",
     "std",
