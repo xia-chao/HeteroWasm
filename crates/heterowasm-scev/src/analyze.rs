@@ -110,6 +110,11 @@ impl ScalarEvolution {
         } else {
             (Vec::new(), Vec::new())
         };
+
+        let memory_recurrence_pairs: Vec<(Value, Value)> = memory_recurrence_addresses
+            .into_iter()
+            .zip(memory_recurrences.iter().map(|variable| variable.value))
+            .collect();
         let recovered_from_memory = memory_recurrences.len();
         if recovered_from_memory > 0 {
             trace
@@ -164,7 +169,7 @@ impl ScalarEvolution {
             recovered_from_memory,
             invariant_params,
             carried_non_affine,
-            memory_recurrence_addresses,
+            memory_recurrences: memory_recurrence_pairs,
         }
     }
 }
