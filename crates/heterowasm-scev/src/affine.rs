@@ -45,6 +45,16 @@ impl ScalarEvolution {
         value: Value,
         visiting: &mut HashSet<Value>,
     ) -> Option<AffineForm> {
+
+        if let Some(variable) = self.induction_variable_of(body, value) {
+            if !matches!(body.values.get(value), Some(ValueDef::BlockParam(..))) {
+                return Some(AffineForm {
+                    invariants: Vec::new(),
+                    induction: vec![(variable.value, 1)],
+                    offset: 0,
+                });
+            }
+        }
         match body.values.get(value)? {
             ValueDef::Operator(Operator::I32Const { value: raw }, _, _) => Some(AffineForm {
                 invariants: Vec::new(),
