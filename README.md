@@ -38,6 +38,9 @@ The loops behind those numbers are integer load, store, add, subtract, and multi
 - nested loops, indirect indexes, unaligned access
 - fewer than 32 multiplies, or fewer than 65536 trips
 
+What that boundary looks like on a real decoder build, and how to read the refusal lines:
+[docs/BOUNDARIES.md](docs/BOUNDARIES.md).
+
 A short loop is cheaper on the CPU.
 
 Rust 1.98 or newer.
