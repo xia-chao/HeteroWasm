@@ -597,3 +597,37 @@ fn caller_import_failure_is_reported_as_an_import_error() -> Result<(), Box<dyn 
     assert!(error.to_string().contains("boom"), "got {error}");
     Ok(())
 }
+
+
+#[test]
+fn mask_add_dispatch_is_trip_count_not_absolute_address() {
+
+    fn shader(comparison: &str) -> Shader<'static> {
+        let source = format!(
+            "fn main() {{\n  if (params.p0 + 64u * gid.x {comparison} ((params.p1 & 4294967292u) + 4294967232u)) {{\n    return;\n  }}\n}}\n"
+        );
+        let source: &'static str = Box::leak(source.into_boxed_str());
+        Shader {
+            source,
+            workgroup_size: 64,
+            dispatch: DispatchSpec::FromFieldMaskAdd(1, 0xFFFF_FFFC, 0xFFFF_FFC0),
+            min_offset_bytes: 0,
+            max_constant_bytes: 60,
+            max_stride_bytes: 64,
+            index_field: Some(0),
+            launch_count: None,
+        }
+    }
+
+    let params = [100_000_u32, 100_192, 999_999];
+    assert_eq!(
+        crate::dispatch::invocation_count(&shader(">"), &params, 100_136),
+        3,
+        "inclusive exit needs the boundary iteration"
+    );
+    assert_eq!(
+        crate::dispatch::invocation_count(&shader(">="), &params, 100_136),
+        2,
+        "strict exit stops before the bound"
+    );
+}
