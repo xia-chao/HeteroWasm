@@ -208,8 +208,16 @@ fn debug_product_should_contain_at_least_one_outside_coverage_loop() -> TestResu
 #[test]
 fn debug_products_should_recover_recurrences_from_memory() -> TestResult {
     let compiled = heterowasm_corpus::compiled_cases()?;
+    let debug_products: Vec<_> = compiled
+        .iter()
+        .filter(|case| case.opt_level == "0")
+        .collect();
+    if debug_products.is_empty() {
+        eprintln!("note: no -O0 artifact found; run bash corpus/source-compiled/build.sh first");
+        return Ok(());
+    }
     let mut recovered = 0_usize;
-    for product in &compiled {
+    for product in debug_products {
         if product.opt_level != "0" {
             continue;
         }
@@ -243,12 +251,17 @@ fn loop_invariance_should_accept_the_slot_address_and_reject_the_stored_counter(
     use super::LoopInvariance;
 
     let compiled = heterowasm_corpus::compiled_cases()?;
+    let debug_products: Vec<_> = compiled
+        .iter()
+        .filter(|case| case.opt_level == "0")
+        .collect();
+    if debug_products.is_empty() {
+        eprintln!("note: no -O0 artifact found; run bash corpus/source-compiled/build.sh first");
+        return Ok(());
+    }
     let mut checked = 0_usize;
 
-    for product in &compiled {
-        if product.opt_level != "0" {
-            continue;
-        }
+    for product in debug_products {
         let trace = Trace::silent();
         let mut module = load_module(&product.bytes, &trace)?;
         expand_all_bodies(&mut module, &trace)?;
