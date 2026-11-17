@@ -39,6 +39,8 @@ pub fn lower(
     let extent = extent.ok_or(LowerError::NoExtent)?;
 
     let members: HashSet<Block> = natural_loop.blocks.iter().copied().collect();
+
+    let inclusive = exit_limit_is_inclusive(body, natural_loop, &members, evolution);
     let mut emitter = Emitter {
         fields: Vec::new(),
         statements: Vec::new(),
@@ -621,9 +623,12 @@ pub fn lower(
         start,
         induction_step,
         workgroup_size,
-        &emitter.fields,
-        &emitter.statements,
-        &results,
+        LoopContent {
+            fields: &emitter.fields,
+            statements: &emitter.statements,
+            results: &results,
+        },
+        inclusive,
     );
     let kernel = Kernel {
         source,
@@ -1271,22 +1276,28 @@ impl StartOffset {
     }
 }
 
+
+struct LoopContent<'a> {
+    fields: &'a [Value],
+    statements: &'a [String],
+    results: &'a [String],
+}
+
 fn render_source(
     dispatch: Dispatch,
     start: Option<StartOffset>,
     induction_step: i64,
     workgroup_size: u32,
-    fields: &[Value],
-    statements: &[String],
-    results: &[String],
+    rendered: LoopContent<'_>,
+    inclusive: bool,
 ) -> String {
     let mut out = String::new();
 
     out.push_str("struct Params {\n");
-    if fields.is_empty() {
+    if rendered.fields.is_empty() {
         out.push_str("  _unused : u32,\n");
     } else {
-        for position in 0..fields.len() {
+        for position in 0..rendered.fields.len() {
             out.push_str(&field_declaration(position));
         }
     }
@@ -1295,7 +1306,7 @@ fn render_source(
     out.push_str("@group(0) @binding(0) var<storage, read_write> mem : array<u32>;\n");
     out.push_str("@group(0) @binding(1) var<uniform> params : Params;\n");
 
-    if !results.is_empty() {
+    if !rendered.results.is_empty() {
         out.push_str("@group(0) @binding(2) var<storage, read_write> results : array<u32>;\n");
     }
     out.push('\n');
@@ -1341,16 +1352,20 @@ fn render_source(
             }
         }
     }
-    out.push_str(&guard(dispatch, induction_step, &start));
-    for statement in statements {
+    out.push_str(&guard(dispatch, induction_step, &start, inclusive));
+    for statement in rendered.statements {
         out.push_str(statement);
         out.push('\n');
     }
 
-    if !results.is_empty() {
+    if !rendered.results.is_empty() {
         let bound = bound_text(dispatch);
         let predicate = if induction_step == 1 {
-            format!("i + 1u == {bound}")
+            if inclusive {
+                format!("i + 1u > {bound}")
+            } else {
+                format!("i + 1u == {bound}")
+            }
         } else if induction_step < 0 {
 
             let magnitude = induction_step.unsigned_abs();
@@ -1366,10 +1381,11 @@ fn render_source(
                     format!("{} + {induction_step}u * gid.x", offset.text())
                 }
             };
-            format!("{current} + {induction_step}u >= {bound}")
+            let comparison = if inclusive { ">" } else { ">=" };
+            format!("{current} + {induction_step}u {comparison} {bound}")
         };
         out.push_str(&format!("  if ({predicate}) {{\n"));
-        for (position, expression) in results.iter().enumerate() {
+        for (position, expression) in rendered.results.iter().enumerate() {
             out.push_str(&format!("    results[{position}] = {expression};\n"));
         }
         out.push_str("  }\n");
@@ -1429,10 +1445,153 @@ fn bound_text(dispatch: Dispatch) -> String {
     }
 }
 
-fn guard(dispatch: Dispatch, step: i64, start: &Option<StartOffset>) -> String {
+
+fn exit_limit_is_inclusive(
+    body: &FunctionBody,
+    natural_loop: &NaturalLoop,
+    members: &HashSet<Block>,
+    evolution: &ScalarEvolution,
+) -> bool {
+    for &block in &natural_loop.blocks {
+        let Some(def) = body.blocks.get(block) else {
+            continue;
+        };
+        let waffle::Terminator::CondBr {
+            cond,
+            if_true,
+            if_false,
+        } = &def.terminator
+        else {
+            continue;
+        };
+        let true_inside = members.contains(&if_true.block);
+        let false_inside = members.contains(&if_false.block);
+        if true_inside == false_inside {
+            continue;
+        }
+        let (inner, negations) = unwrap_eqz(body, *cond);
+        let Some((operator, induction_left)) = induction_comparison(body, inner, evolution) else {
+            continue;
+        };
+
+        let mut continue_on_true = true_inside;
+        if negations % 2 == 1 {
+            continue_on_true = !continue_on_true;
+        }
+        let mut normalized = if induction_left {
+            operator
+        } else {
+            let Some(flipped) = flip_comparison(operator) else {
+                continue;
+            };
+            flipped
+        };
+        if !continue_on_true {
+            let Some(negated) = negate_comparison(normalized) else {
+                continue;
+            };
+            normalized = negated;
+        }
+        match normalized {
+            Operator::I32LtU => return false,
+            Operator::I32LeU => return true,
+
+            _ => continue,
+        }
+    }
+    false
+}
+
+
+fn unwrap_eqz(body: &FunctionBody, value: Value) -> (Value, u32) {
+    let mut current = canonical_value(body, value);
+    let mut negations = 0_u32;
+    while negations < 8 {
+        let Some(ValueDef::Operator(Operator::I32Eqz, args, _)) = body.values.get(current) else {
+            break;
+        };
+        let Some(inner) = body.arg_pool[*args].first().copied() else {
+            break;
+        };
+        current = canonical_value(body, inner);
+        negations += 1;
+    }
+    (current, negations)
+}
+
+
+fn induction_comparison(
+    body: &FunctionBody,
+    value: Value,
+    evolution: &ScalarEvolution,
+) -> Option<(Operator, bool)> {
+    let canonical = canonical_value(body, value);
+    let ValueDef::Operator(operator, args, _) = body.values.get(canonical)? else {
+        return None;
+    };
+    if !is_comparison_operator(operator) {
+        return None;
+    }
+    let operands = &body.arg_pool[*args];
+    let left = canonical_value(body, *operands.first()?);
+    let right = canonical_value(body, *operands.get(1)?);
+    let left_induction = evolution.depends_on_induction(body, left, 8);
+    let right_induction = evolution.depends_on_induction(body, right, 8);
+    match (left_induction, right_induction) {
+        (true, false) => Some((*operator, true)),
+        (false, true) => Some((*operator, false)),
+        _ => None,
+    }
+}
+
+fn is_comparison_operator(operator: &Operator) -> bool {
+    matches!(
+        operator,
+        Operator::I32Eq
+            | Operator::I32Ne
+            | Operator::I32LtU
+            | Operator::I32LtS
+            | Operator::I32GtU
+            | Operator::I32GtS
+            | Operator::I32LeU
+            | Operator::I32LeS
+            | Operator::I32GeU
+            | Operator::I32GeS
+    )
+}
+
+
+fn flip_comparison(operator: Operator) -> Option<Operator> {
+    Some(match operator {
+        Operator::I32Eq => Operator::I32Eq,
+        Operator::I32Ne => Operator::I32Ne,
+        Operator::I32LtU => Operator::I32GtU,
+        Operator::I32GtU => Operator::I32LtU,
+        Operator::I32LeU => Operator::I32GeU,
+        Operator::I32GeU => Operator::I32LeU,
+        _ => return None,
+    })
+}
+
+
+fn negate_comparison(operator: Operator) -> Option<Operator> {
+    Some(match operator {
+        Operator::I32Eq => Operator::I32Ne,
+        Operator::I32Ne => Operator::I32Eq,
+        Operator::I32LtU => Operator::I32GeU,
+        Operator::I32GeU => Operator::I32LtU,
+        Operator::I32LeU => Operator::I32GtU,
+        Operator::I32GtU => Operator::I32LeU,
+        _ => return None,
+    })
+}
+
+fn guard(dispatch: Dispatch, step: i64, start: &Option<StartOffset>, inclusive: bool) -> String {
     let bound = bound_text(dispatch);
+
+    let comparison = if inclusive { ">" } else { ">=" };
     if step == 1 {
-        return format!("  if (i >= {bound}) {{\n    return;\n  }}\n");
+        return format!("  if (i {comparison} {bound}) {{\n    return;\n  }}\n");
     }
 
     if step < 0 {
@@ -1451,5 +1610,5 @@ fn guard(dispatch: Dispatch, step: i64, start: &Option<StartOffset>) -> String {
         None => format!("{step}u * gid.x"),
         Some(offset) => format!("{} + {step}u * gid.x", offset.text()),
     };
-    format!("  if ({cursor} >= {bound}) {{\n    return;\n  }}\n")
+    format!("  if ({cursor} {comparison} {bound}) {{\n    return;\n  }}\n")
 }
