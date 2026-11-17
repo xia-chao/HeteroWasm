@@ -184,11 +184,12 @@ impl Span {
 
     fn upward_bytes(shader: &Shader<'_>, params: &[u32]) -> Option<u64> {
         let index_slot = shader.index_field?;
-        let (limit_slot, limit_mask) = match shader.dispatch {
-            DispatchSpec::FromField(slot) => (slot, u32::MAX),
-            DispatchSpec::FromFieldMask(slot, mask) => (slot, mask),
-            DispatchSpec::FromFieldMaskAdd(_, _, _)
-            | DispatchSpec::FromSum(_, _)
+        let (limit_slot, limit_mask, addend) = match shader.dispatch {
+            DispatchSpec::FromField(slot) => (slot, u32::MAX, 0),
+            DispatchSpec::FromFieldMask(slot, mask) => (slot, mask, 0),
+
+            DispatchSpec::FromFieldMaskAdd(slot, mask, addend) => (slot, mask, addend),
+            DispatchSpec::FromSum(_, _)
             | DispatchSpec::FromSumShift(_, _, _)
             | DispatchSpec::FromSubShift(_, _, _, _)
             | DispatchSpec::FromLoadedShiftMask(_, _, _, _)
@@ -203,7 +204,7 @@ impl Span {
             return None;
         }
         let start = *params.get(index_slot)?;
-        let limit = params.get(limit_slot).copied()? & limit_mask;
+        let limit = (params.get(limit_slot).copied()? & limit_mask).wrapping_add(addend);
         if start > limit {
             return None;
         }
