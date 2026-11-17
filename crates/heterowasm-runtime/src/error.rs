@@ -25,6 +25,9 @@ pub enum RuntimeError {
 
     #[error("spec §15 rejects GPU: {reason}")]
     DispatchRefused { reason: String },
+
+    #[error("failed to define host import: {reason}")]
+    Import { reason: String },
     #[error("wasm execution failed: {reason}")]
     Execute { reason: String },
     #[error("module does not export a memory — host cannot hand linear memory to the GPU")]

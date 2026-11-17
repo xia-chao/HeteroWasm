@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use heterowasm_trace::{Level, Trace};
+use wasmtime::Val;
 
-use crate::{DispatchSpec, Runtime, RuntimeError};
+use crate::{DispatchSpec, Runtime, RuntimeError, Shader};
 
 
 fn fixture(tag: &str, kernel_wgsl: &str, kernel_json: &str, wat_source: &str) -> PathBuf {
@@ -487,4 +488,72 @@ fn unresolved_uniform_padding_uses_the_wasm_import() {
     runtime
         .run("main", &[])
         .expect("the four-parameter import should instantiate and return");
+}
+
+
+#[test]
+fn caller_imports_override_the_zero_stub() -> Result<(), Box<dyn std::error::Error>> {
+    const WAT: &str = r#"(module
+      (import "env" "answer" (func $answer (result i32)))
+      (memory (export "mem") 1)
+      (func (export "run") (result i32) (call $answer))
+    )"#;
+    let dir = fixture("caller-imports", KERNEL_WGSL, KERNEL_MANIFEST, WAT);
+
+    let mut stubbed = Runtime::load(&dir, quiet())?;
+    assert_eq!(
+        i32_result(&stubbed.run("run", &[])?),
+        Some(0),
+        "the default path must stay a zero stub"
+    );
+
+    let mut hooked = Runtime::load_with(&dir, quiet(), |_engine, linker, _module| {
+        linker
+            .func_wrap("env", "answer", || 7i32)
+            .map_err(|error| RuntimeError::Import {
+                reason: error.to_string(),
+            })?;
+        Ok(())
+    })?;
+    assert_eq!(
+        i32_result(&hooked.run("run", &[])?),
+        Some(7),
+        "the caller defined import must win over the stub"
+    );
+    Ok(())
+}
+
+
+fn i32_result(results: &[Val]) -> Option<i32> {
+    match results.first() {
+        Some(Val::I32(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+
+#[test]
+fn mask_add_limit_keeps_the_index_span() {
+    let shader = Shader {
+        source: "",
+        workgroup_size: 64,
+        dispatch: DispatchSpec::FromFieldMaskAdd(1, 0xFFFF_FFFC, 0xFFFF_FFC0),
+        min_offset_bytes: 0,
+        max_constant_bytes: 60,
+        max_stride_bytes: 64,
+        index_field: Some(0),
+        launch_count: None,
+    };
+    let params = [100_000_u32, 100_200, 200_000];
+    let (lo, hi) =
+        crate::dispatch::touched_range(&shader, &params, 16 * 1024 * 1024).expect("touched range");
+    assert!(
+        lo <= 100_000,
+        "the destination span must start at the index slot"
+    );
+    assert!(
+        hi >= 100_192,
+        "the destination span must reach the last 64-byte block"
+    );
+    assert!(hi >= 200_192, "the source span must be kept as well");
 }

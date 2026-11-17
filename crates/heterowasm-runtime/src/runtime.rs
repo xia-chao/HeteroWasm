@@ -19,6 +19,14 @@ pub struct Runtime {
 impl Runtime {
 
     pub fn load(dir: &Path, trace: Trace) -> Result<Self, RuntimeError> {
+        Self::load_with(dir, trace, |_, _, _| Ok(()))
+    }
+
+
+    pub fn load_with<F>(dir: &Path, trace: Trace, define_imports: F) -> Result<Self, RuntimeError>
+    where
+        F: FnOnce(&Engine, &mut Linker<HostState>, &Module) -> Result<(), RuntimeError>,
+    {
         let _scope = trace.stage(Stage::Runtime, "load");
         let kernels = crate::manifest::load_dir(dir)?;
 
@@ -89,6 +97,9 @@ impl Runtime {
                     reason: error.to_string(),
                 })?;
         }
+
+        linker.allow_shadowing(true);
+        define_imports(&engine, &mut linker, &module)?;
         let mut memory_name: Option<String> = None;
         for export in module.exports() {
             if !matches!(export.ty(), wasmtime::ExternType::Memory(_)) {
