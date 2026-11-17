@@ -83,7 +83,7 @@ pub struct ScalarEvolution {
 
     pub(crate) carried_non_affine: Vec<Value>,
 
-    pub(crate) memory_recurrence_addresses: Vec<Value>,
+    pub(crate) memory_recurrences: Vec<(Value, Value)>,
 }
 
 impl ScalarEvolution {
@@ -109,10 +109,27 @@ impl ScalarEvolution {
 
 
     pub fn is_induction(&self, body: &FunctionBody, value: Value) -> bool {
+        self.induction_variable_of(body, value).is_some()
+    }
+
+
+    pub fn induction_variable_of(
+        &self,
+        body: &FunctionBody,
+        value: Value,
+    ) -> Option<&InductionVariable> {
         let canonical = canonical_value(body, value);
+        if let Some(variable) = self
+            .induction
+            .iter()
+            .find(|variable| variable.value == canonical)
+        {
+            return Some(variable);
+        }
+        let induction = self.memory_recurrence_for_load(body, canonical)?;
         self.induction
             .iter()
-            .any(|variable| variable.value == canonical)
+            .find(|variable| variable.value == induction)
     }
 
 
@@ -122,10 +139,6 @@ impl ScalarEvolution {
         }
         let canonical = canonical_value(body, value);
         if self.is_induction(body, canonical) {
-            return true;
-        }
-
-        if self.is_memory_recurrence_load(body, canonical) {
             return true;
         }
         let Some(ValueDef::Operator(_, args, _)) = body.values.get(canonical) else {
@@ -138,12 +151,12 @@ impl ScalarEvolution {
     }
 
 
-    fn is_memory_recurrence_load(&self, body: &FunctionBody, canonical: Value) -> bool {
-        if self.memory_recurrence_addresses.is_empty() {
-            return false;
+    fn memory_recurrence_for_load(&self, body: &FunctionBody, canonical: Value) -> Option<Value> {
+        if self.memory_recurrences.is_empty() {
+            return None;
         }
         let Some(ValueDef::Operator(operator, args, _)) = body.values.get(canonical) else {
-            return false;
+            return None;
         };
         if !matches!(
             operator,
@@ -154,14 +167,15 @@ impl ScalarEvolution {
                 | Operator::I32Load16S { .. }
                 | Operator::I32Load16U { .. }
         ) {
-            return false;
+            return None;
         }
-        let Some(&address) = body.arg_pool[*args].first() else {
-            return false;
-        };
-        self.memory_recurrence_addresses
+        let &address = body.arg_pool[*args].first()?;
+        self.memory_recurrences
             .iter()
-            .any(|recorded| crate::memory_recurrence::same_address(body, *recorded, address, 8))
+            .find_map(|(recorded, induction)| {
+                crate::memory_recurrence::same_address(body, *recorded, address, 8)
+                    .then_some(*induction)
+            })
     }
 
 

@@ -383,12 +383,20 @@ fn spilled_recurrence_should_be_recognized_from_the_exit_condition() -> TestResu
                         depends,
                         "a load from the spilled slot must depend on the induction"
                     );
+                    assert!(
+                        evolution.induction_variable_of(body, value).is_some(),
+                        "a load from the spilled slot must map to the recorded induction"
+                    );
                     seen_recurrence_load = true;
                 }
                 Some(32) => {
                     assert!(
                         !depends,
                         "a read-only slot must not depend on the induction"
+                    );
+                    assert!(
+                        evolution.induction_variable_of(body, value).is_none(),
+                        "a read-only slot must not map to an induction variable"
                     );
                     seen_other_load = true;
                 }
