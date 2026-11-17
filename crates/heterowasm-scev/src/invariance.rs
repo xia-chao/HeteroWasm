@@ -83,6 +83,13 @@ impl<'a> LoopInvariance<'a> {
 
                 if matches!(
                     operator,
+                    Operator::I32Const { .. } | Operator::I64Const { .. }
+                ) {
+                    return Some(HashSet::from([canonical]));
+                }
+
+                if matches!(
+                    operator,
                     Operator::I32Load { .. }
                         | Operator::I32Load8S { .. }
                         | Operator::I32Load8U { .. }

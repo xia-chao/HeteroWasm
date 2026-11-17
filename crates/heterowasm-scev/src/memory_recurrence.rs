@@ -13,9 +13,11 @@ pub(crate) fn find_memory_recurrences(
     body: &FunctionBody,
     natural_loop: &NaturalLoop,
     invariant_params: &HashSet<Value>,
-) -> Vec<InductionVariable> {
+) -> (Vec<InductionVariable>, Vec<Value>) {
     let members: HashSet<Block> = natural_loop.blocks.iter().copied().collect();
     let mut found: Vec<InductionVariable> = Vec::new();
+
+    let mut addresses: Vec<Value> = Vec::new();
 
     let invariance = LoopInvariance::new(body, natural_loop, invariant_params);
 
@@ -60,9 +62,10 @@ pub(crate) fn find_memory_recurrences(
             initial: recurrence_initial(body, &members, address).unwrap_or(loaded),
             step,
         });
+        addresses.push(canonical_value(body, address));
     }
 
-    found
+    (found, addresses)
 }
 
 
@@ -122,7 +125,7 @@ fn add_of_load(body: &FunctionBody, stored: Value) -> Option<(Value, Value, &Ope
 }
 
 
-fn same_address(body: &FunctionBody, left: Value, right: Value, depth: usize) -> bool {
+pub(crate) fn same_address(body: &FunctionBody, left: Value, right: Value, depth: usize) -> bool {
     let left = canonical_value(body, left);
     let right = canonical_value(body, right);
     if left == right {
@@ -139,7 +142,8 @@ fn same_address(body: &FunctionBody, left: Value, right: Value, depth: usize) ->
     else {
         return false;
     };
-    if std::mem::discriminant(left_operator) != std::mem::discriminant(right_operator) {
+
+    if left_operator != right_operator {
         return false;
     }
 
