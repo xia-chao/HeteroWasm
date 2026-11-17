@@ -9,7 +9,7 @@ use waffle::{Block, Func, Module, Terminator, Value, ValueDef};
 
 use crate::lower::lower;
 use crate::region::{offload_region_calls, RegionCalls};
-use crate::types::{Dispatch, DispatchShape, Kernel};
+use crate::types::{Dispatch, DispatchShape, Kernel, LoopRegion};
 
 
 pub(crate) struct OffloadPlan {
@@ -90,13 +90,16 @@ pub(crate) fn loop_exit(body: &waffle::FunctionBody, members: &[Block]) -> Resul
 pub(crate) fn offload_loop(
     module: &mut Module<'_>,
     func: Func,
-    header: Block,
-    exit: Block,
-    members: &[Block],
+    region: LoopRegion<'_>,
     fields: &[Value],
     selector: u32,
     trip: Option<crate::region::RuntimeTrip>,
 ) -> Result<(), String> {
+    let LoopRegion {
+        header,
+        exit,
+        members,
+    } = region;
 
     let explicit: Vec<Value> = {
         let body = module.funcs[func].body().ok_or("not a function body")?;
@@ -246,9 +249,11 @@ pub fn rewrite_module_for_gpu(
         if let Err(reason) = offload_loop(
             module,
             plan.func,
-            plan.header,
-            plan.exit,
-            &plan.members,
+            LoopRegion {
+                header: plan.header,
+                exit: plan.exit,
+                members: &plan.members,
+            },
             &plan.kernel.fields,
             selector,
             runtime_trip(&plan.kernel),

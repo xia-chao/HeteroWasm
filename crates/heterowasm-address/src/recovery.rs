@@ -130,7 +130,7 @@ impl AddressRecovery {
                     let amount =
                         u32::try_from(constant_value(body, canonical_value(body, *inner.get(1)?))?)
                             .ok()?;
-                    if amount < 2 || amount >= 32 {
+                    if !(2..32).contains(&amount) {
                         return None;
                     }
                     let variable = evolution

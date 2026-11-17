@@ -179,10 +179,8 @@ pub fn lower(
         let right = canonical_value(body, *operands.get(1)?);
         let (base, mask) = if let Some(mask) = constant_value(body, right) {
             (left, mask)
-        } else if let Some(mask) = constant_value(body, left) {
-            (right, mask)
         } else {
-            return None;
+            (right, constant_value(body, left)?)
         };
         let waffle::ValueDef::BlockParam(block, _, _) = body.values.get(base)? else {
             return None;
@@ -273,10 +271,8 @@ pub fn lower(
         let right = canonical_value(body, *operands.get(1)?);
         let (load, mask) = if let Some(mask) = constant_value(body, right) {
             (left, mask)
-        } else if let Some(mask) = constant_value(body, left) {
-            (right, mask)
         } else {
-            return None;
+            (right, constant_value(body, left)?)
         };
         let mask = u32::try_from(mask).ok()?;
         let waffle::ValueDef::Operator(waffle::Operator::I32Load { memory }, load_args, _) =
@@ -365,10 +361,8 @@ pub fn lower(
         };
         let (anded, addend) = if let Some(addend) = bits(right) {
             (left, addend)
-        } else if let Some(addend) = bits(left) {
-            (right, addend)
         } else {
-            return None;
+            (right, bits(left)?)
         };
         let waffle::ValueDef::Operator(waffle::Operator::I32And, and_args, _) =
             body.values.get(anded)?
@@ -380,10 +374,8 @@ pub fn lower(
         let and_right = canonical_value(body, *and_operands.get(1)?);
         let (base, mask) = if let Some(mask) = bits(and_right) {
             (and_left, mask)
-        } else if let Some(mask) = bits(and_left) {
-            (and_right, mask)
         } else {
-            return None;
+            (and_right, bits(and_left)?)
         };
         let waffle::ValueDef::BlockParam(block, _, _) = body.values.get(base)? else {
             return None;
@@ -448,11 +440,10 @@ pub fn lower(
         let (base, minuend, subtrahend, amount) = if let Some(base) = outside(left) {
             let (minuend, subtrahend, amount) = shifted(right)?;
             (base, minuend, subtrahend, amount)
-        } else if let Some(base) = outside(right) {
+        } else {
+            let base = outside(right)?;
             let (minuend, subtrahend, amount) = shifted(left)?;
             (base, minuend, subtrahend, amount)
-        } else {
-            return None;
         };
         let base = field_of(body, base, evolution, members, emitter).ok()?;
         let minuend = field_of(body, minuend, evolution, members, emitter).ok()?;
