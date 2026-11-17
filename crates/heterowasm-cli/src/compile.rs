@@ -13,6 +13,7 @@ use heterowasm_trace::{Stage, Trace};
 use heterowasm_wgsl::{artifact, Artifact};
 
 use crate::error::CliError;
+use crate::types::KernelEmission;
 
 
 pub(crate) fn compile(input: &Path, output: &Path, trace: Trace) -> Result<(), CliError> {
@@ -44,11 +45,19 @@ pub(crate) fn compile(input: &Path, output: &Path, trace: Trace) -> Result<(), C
     let fused = emit_fused(&module, output, &trace)?;
 
     let fused_rewrite = fused.is_some();
-    let (written, skipped, emitted) = match fused {
+    let KernelEmission {
+        written,
+        skipped,
+        emitted,
+    } = match fused {
         Some(stem) => {
 
             println!("fusion succeeded; skip emitting single-loop kernels (they will not be used)");
-            (1_usize, 0_usize, vec![(0_usize, 0_usize, stem)])
+            KernelEmission {
+                written: 1,
+                skipped: 0,
+                emitted: vec![(0, 0, stem)],
+            }
         }
         None => emit_single_loops(&module, output, &trace)?,
     };
@@ -198,7 +207,7 @@ fn emit_single_loops(
     module: &Module<'_>,
     output: &Path,
     trace: &Trace,
-) -> Result<(usize, usize, Vec<(usize, usize, String)>), CliError> {
+) -> Result<KernelEmission, CliError> {
     let mut written = 0_usize;
     let mut skipped = 0_usize;
     let mut names: Vec<(usize, usize, String)> = Vec::new();
@@ -255,7 +264,11 @@ fn emit_single_loops(
             written += 1;
         }
     }
-    Ok((written, skipped, names))
+    Ok(KernelEmission {
+        written,
+        skipped,
+        emitted: names,
+    })
 }
 
 fn write_artifact(output: &Path, stem: &str, artifact: &Artifact<'_>) -> Result<(), CliError> {

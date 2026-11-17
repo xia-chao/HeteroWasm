@@ -3,7 +3,7 @@ use wasmtime::{Caller, Engine, Extern, Linker, Memory, Val, ValType};
 
 use crate::error::RuntimeError;
 use crate::gpu::{Compiled, GpuContext, Workspace};
-use crate::types::{KernelSpec, Shader};
+use crate::types::{DispatchMemory, DispatchReadback, KernelSpec, Shader};
 
 
 pub struct HostState {
@@ -166,15 +166,20 @@ fn dispatch(
             state,
             index,
             &shader,
-            memory_len,
-            &parts,
+            DispatchMemory {
+                limit: memory_len,
+                parts: &parts,
+            },
             uniforms,
             uniform_size,
             &trace,
         )
     }?;
 
-    let (regions, exit_values) = ran;
+    let DispatchReadback {
+        regions,
+        exit_values,
+    } = ran;
     write_memory(&memory, caller, &regions).map_err(wasmtime::Error::from)?;
 
 
@@ -200,13 +205,12 @@ fn run_on_gpu(
     state: &mut HostState,
     index: usize,
     shader: &Shader<'_>,
-    memory_len: usize,
-    parts: &[(usize, Vec<u8>)],
+    memory: DispatchMemory<'_>,
     params: &[u32],
     uniform_size: usize,
     trace: &Trace,
-) -> Result<(Vec<(usize, Vec<u8>)>, Vec<u32>), RuntimeError> {
-    let size = memory_len.max(4);
+) -> Result<DispatchReadback, RuntimeError> {
+    let size = memory.limit.max(4);
 
     let result_slots = state
         .kernels
@@ -240,8 +244,9 @@ fn run_on_gpu(
         })?;
 
     let context = &state.context;
-    let limit = memory_len.min(workspace.size());
-    context.run_parts(compiled, shader, workspace, limit, parts, params, trace)
+    let limit = memory.limit.min(workspace.size());
+    let memory = DispatchMemory { limit, ..memory };
+    context.run_parts(compiled, shader, workspace, memory, params, trace)
 }
 
 
