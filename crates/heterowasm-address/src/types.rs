@@ -102,6 +102,13 @@ impl NormalizedAddress {
                     initial_in_base: false,
                 })
             }
+
+            ([], []) => Some(NormalizedAddress {
+                base: Vec::new(),
+                stride: 0,
+                offset,
+                initial_in_base: false,
+            }),
             _ => None,
         }
     }
