@@ -81,30 +81,8 @@ fn condition_tests_induction(
         return false;
     };
     let operands: &[Value] = &body.arg_pool[*args];
+
     operands
         .iter()
-        .any(|operand| depends_on_induction(body, *operand, evolution, 8))
-}
-
-
-fn depends_on_induction(
-    body: &FunctionBody,
-    value: Value,
-    evolution: &ScalarEvolution,
-    depth: usize,
-) -> bool {
-    if depth == 0 {
-        return false;
-    }
-    let canonical = heterowasm_scev::canonical_value(body, value);
-    if evolution.is_induction(body, canonical) {
-        return true;
-    }
-    let Some(ValueDef::Operator(_, args, _)) = body.values.get(canonical) else {
-        return false;
-    };
-    let operands: &[Value] = &body.arg_pool[*args];
-    operands
-        .iter()
-        .any(|operand| depends_on_induction(body, *operand, evolution, depth - 1))
+        .any(|operand| evolution.depends_on_induction(body, *operand, 8))
 }

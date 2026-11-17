@@ -105,10 +105,10 @@ impl ScalarEvolution {
         carried_non_affine.retain(|parameter| !invariance.value_is_invariant(*parameter));
 
 
-        let memory_recurrences = if induction.is_empty() {
+        let (memory_recurrences, memory_recurrence_addresses) = if induction.is_empty() {
             find_memory_recurrences(body, natural_loop, &invariant_params)
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         let recovered_from_memory = memory_recurrences.len();
         if recovered_from_memory > 0 {
@@ -164,6 +164,7 @@ impl ScalarEvolution {
             recovered_from_memory,
             invariant_params,
             carried_non_affine,
+            memory_recurrence_addresses,
         }
     }
 }
