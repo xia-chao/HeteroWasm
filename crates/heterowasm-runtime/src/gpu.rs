@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use crate::error::RuntimeError;
-use crate::types::{DispatchSpec, Shader};
+use crate::types::{DispatchMemory, DispatchReadback, DispatchSpec, Shader};
 use heterowasm_trace::{Stage, Trace};
 
 
@@ -254,11 +254,11 @@ impl GpuContext {
     }
 
 
-    fn part_bytes<'a>(
-        parts: &'a [(usize, Vec<u8>)],
+    fn part_bytes(
+        parts: &[(usize, Vec<u8>)],
         copy_lo: usize,
         copy_hi: usize,
-    ) -> Result<&'a [u8], RuntimeError> {
+    ) -> Result<&[u8], RuntimeError> {
         parts
             .iter()
             .find_map(|(lo, bytes)| {
@@ -306,8 +306,20 @@ impl GpuContext {
             };
             parts.push((*copy_lo, bytes.to_vec()));
         }
-        let (regions, exits) =
-            self.run_parts(compiled, shader, workspace, limit, &parts, params, trace)?;
+        let DispatchReadback {
+            regions,
+            exit_values,
+        } = self.run_parts(
+            compiled,
+            shader,
+            workspace,
+            DispatchMemory {
+                limit,
+                parts: &parts,
+            },
+            params,
+            trace,
+        )?;
         for (lo, bytes) in regions {
             let Some(end) = lo.checked_add(bytes.len()) else {
                 continue;
@@ -316,7 +328,7 @@ impl GpuContext {
                 slot.copy_from_slice(&bytes);
             }
         }
-        Ok(exits)
+        Ok(exit_values)
     }
 
 
@@ -325,11 +337,11 @@ impl GpuContext {
         compiled: &Compiled,
         shader: &Shader<'_>,
         workspace: &Workspace,
-        limit: usize,
-        parts: &[(usize, Vec<u8>)],
+        memory: DispatchMemory<'_>,
         params: &[u32],
         trace: &Trace,
-    ) -> Result<(Vec<(usize, Vec<u8>)>, Vec<u32>), RuntimeError> {
+    ) -> Result<DispatchReadback, RuntimeError> {
+        let DispatchMemory { limit, parts } = memory;
         let merged = Self::copy_ranges(shader, params, limit);
         for (_, _, copy_lo, copy_hi) in &merged {
             let copy_lo_bytes = u64::try_from(*copy_lo).unwrap_or(0);
@@ -568,7 +580,10 @@ impl GpuContext {
             )
             .emit();
 
-        Ok((regions, exit_values))
+        Ok(DispatchReadback {
+            regions,
+            exit_values,
+        })
     }
 }
 

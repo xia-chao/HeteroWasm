@@ -2,6 +2,13 @@ use heterowasm_ir::Verdict;
 use heterowasm_legality::{Disposition, GuardKind, Obligation};
 
 
+pub(crate) struct KernelEmission {
+    pub(crate) written: usize,
+    pub(crate) skipped: usize,
+    pub(crate) emitted: Vec<(usize, usize, String)>,
+}
+
+
 #[derive(Default)]
 pub struct AnalysisReport {
     pub(crate) functions: Vec<FunctionReport>,

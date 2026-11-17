@@ -30,4 +30,4 @@ heterowasm-bounds = { version = "0.1.0", path = "../heterowasm-bounds" }
 wat.workspace = true
 wasmprinter.workspace = true
 heterowasm-runtime = { version = "0.1.0", path = "../heterowasm-runtime" }
-wasmtime = "49.0.1"
+wasmtime = "49.0.5"
