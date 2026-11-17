@@ -631,3 +631,36 @@ fn mask_add_dispatch_is_trip_count_not_absolute_address() {
         "strict exit stops before the bound"
     );
 }
+
+
+#[test]
+fn sum_shift_limit_keeps_the_index_span_and_skips_value_slots() {
+    let source = "fn main() {\n  if (params.p0 + 32u * gid.x >= (params.p1 + (params.p2 << 2u))) {\n    return;\n  }\n  mem[params.p0 / 4u + 8u * gid.x] = params.p3;\n}\n";
+    let shader = Shader {
+        source,
+        workgroup_size: 64,
+        dispatch: DispatchSpec::FromSumShift(1, 2, 2),
+        min_offset_bytes: 0,
+        max_constant_bytes: 28,
+        max_stride_bytes: 32,
+        index_field: Some(0),
+        launch_count: None,
+    };
+    let params = [735_588_u32, 735_584, 208_353, 0xFFFF_FFFF];
+    let (lo, hi) =
+        crate::dispatch::touched_range(&shader, &params, 16 * 1024 * 1024).expect("touched range");
+    assert!(
+        lo <= 735_588,
+        "the span must start at the index slot, got {lo}"
+    );
+    assert!(hi >= 1_569_000, "the span must reach the bound, got {hi}");
+    assert!(
+        hi < 16 * 1024 * 1024,
+        "the value slot must not be treated as an address, got {hi}"
+    );
+    assert_eq!(
+        crate::dispatch::invocation_count(&shader, &params, 1_568_996),
+        26_044,
+        "dispatch must be the trip count, not the bound expression"
+    );
+}
