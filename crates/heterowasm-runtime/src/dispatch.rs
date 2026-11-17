@@ -47,6 +47,11 @@ pub(crate) fn invocation_count(shader: &Shader<'_>, params: &[u32], dispatched: 
     if let DispatchSpec::FromFieldMaskAdd(field, mask, addend) = shader.dispatch {
         return mask_add_invocations(shader, params, dispatched, index_slot, field, mask, addend);
     }
+    if let DispatchSpec::FromSumShift(base, shifted, amount) = shader.dispatch {
+        return from_sum_shift_invocations(
+            shader, params, dispatched, index_slot, base, shifted, amount,
+        );
+    }
     let (limit_slot, limit_mask) = match shader.dispatch {
         DispatchSpec::FromField(slot) => (slot, u32::MAX),
         DispatchSpec::FromFieldMask(slot, mask) => (slot, mask),
@@ -92,6 +97,53 @@ pub(crate) fn invocation_count(shader: &Shader<'_>, params: &[u32], dispatched: 
         trips = trips.saturating_add(1);
     }
     dispatched.max(trips)
+}
+
+
+fn from_sum_shift_invocations(
+    shader: &Shader<'_>,
+    params: &[u32],
+    dispatched: u32,
+    index_slot: usize,
+    base: usize,
+    shifted: usize,
+    amount: u32,
+) -> u32 {
+    let Ok(stride) = u32::try_from(shader.max_stride_bytes.max(0)) else {
+        return dispatched;
+    };
+    if stride < 4 || stride % 4 != 0 {
+        return dispatched;
+    }
+    let Some(&start) = params.get(index_slot) else {
+        return dispatched;
+    };
+    let Some(&base_value) = params.get(base) else {
+        return dispatched;
+    };
+    let Some(&shifted_value) = params.get(shifted) else {
+        return dispatched;
+    };
+    let limit = base_value.wrapping_add(shifted_value.wrapping_shl(amount));
+    if start > limit {
+        return dispatched;
+    }
+    let span = limit - start;
+    let cursor = format!("params.p{index_slot} + {stride}u * gid.x");
+    let bound = format!("(params.p{base} + (params.p{shifted} << {amount}u))");
+    let inclusive = shader.source.contains(&format!("if ({cursor} > {bound})"));
+    let strict = shader.source.contains(&format!("if ({cursor} >= {bound})"));
+    let trips = if inclusive {
+        span / stride + 1
+    } else if strict {
+        span.div_ceil(stride)
+    } else {
+        return dispatched;
+    };
+    if trips == 0 {
+        return dispatched;
+    }
+    dispatched.min(trips)
 }
 
 
@@ -145,6 +197,32 @@ pub(crate) fn scheduled_invocations(shader: &Shader<'_>, params: &[u32], dispatc
 }
 
 
+enum FieldRole {
+    Address,
+    Value,
+    Unknown,
+}
+
+fn field_role(source: &str, slot: usize) -> FieldRole {
+    let needle = format!("params.p{slot}");
+    let mut tail = source;
+    while let Some(position) = tail.find("mem[") {
+        let after = &tail[position..];
+        let Some(end) = after.find(']') else {
+            break;
+        };
+        if after[..end].contains(&needle) {
+            return FieldRole::Address;
+        }
+        tail = &after[end + 1..];
+    }
+    if source.contains(&needle) {
+        FieldRole::Value
+    } else {
+        FieldRole::Unknown
+    }
+}
+
 fn spans(shader: &Shader<'_>, params: &[u32], trip: u64) -> Vec<Span> {
 
     let stride = u64::try_from(shader.max_stride_bytes.max(0)).unwrap_or(0);
@@ -159,6 +237,7 @@ fn spans(shader: &Shader<'_>, params: &[u32], trip: u64) -> Vec<Span> {
     params
         .iter()
         .enumerate()
+        .filter(|(slot, _)| !matches!(field_role(shader.source, *slot), FieldRole::Value))
         .filter(|(slot, _)| {
             !matches!(
                 shader.dispatch,
@@ -231,13 +310,21 @@ impl Span {
 
     fn upward_bytes(shader: &Shader<'_>, params: &[u32]) -> Option<u64> {
         let index_slot = shader.index_field?;
-        let (limit_slot, limit_mask, addend) = match shader.dispatch {
-            DispatchSpec::FromField(slot) => (slot, u32::MAX, 0),
-            DispatchSpec::FromFieldMask(slot, mask) => (slot, mask, 0),
+        let (limit_slot, limit) = match shader.dispatch {
+            DispatchSpec::FromField(slot) => (slot, *params.get(slot)?),
+            DispatchSpec::FromFieldMask(slot, mask) => (slot, params.get(slot)? & mask),
 
-            DispatchSpec::FromFieldMaskAdd(slot, mask, addend) => (slot, mask, addend),
+            DispatchSpec::FromFieldMaskAdd(slot, mask, addend) => {
+                (slot, (params.get(slot)? & mask).wrapping_add(addend))
+            }
+
+            DispatchSpec::FromSumShift(base, shifted, amount) => (
+                base,
+                params
+                    .get(base)?
+                    .wrapping_add(params.get(shifted)?.wrapping_shl(amount)),
+            ),
             DispatchSpec::FromSum(_, _)
-            | DispatchSpec::FromSumShift(_, _, _)
             | DispatchSpec::FromSubShift(_, _, _, _)
             | DispatchSpec::FromLoadedShiftMask(_, _, _, _)
             | DispatchSpec::FromLoaded(_, _)
@@ -251,7 +338,6 @@ impl Span {
             return None;
         }
         let start = *params.get(index_slot)?;
-        let limit = (params.get(limit_slot).copied()? & limit_mask).wrapping_add(addend);
         if start > limit {
             return None;
         }
