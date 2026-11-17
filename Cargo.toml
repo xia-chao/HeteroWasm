@@ -12,6 +12,10 @@ edition = "2021"
 rust-version = "1.98"
 license = "MIT"
 description = "Conservative automatic WebAssembly to WebGPU heterogeneous compilation"
+repository = "https://github.com/xia-chao/HeteroWasm"
+homepage = "https://github.com/xia-chao/HeteroWasm"
+keywords = ["webassembly", "webgpu", "wgpu", "compiler", "heterogeneous"]
+categories = ["wasm", "development-tools"]
 
 [workspace.dependencies]
 # In-tree path deps must also set version: deny.toml bans.wildcards = "deny"
