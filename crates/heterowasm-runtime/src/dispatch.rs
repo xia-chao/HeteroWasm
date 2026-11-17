@@ -44,6 +44,9 @@ pub(crate) fn invocation_count(shader: &Shader<'_>, params: &[u32], dispatched: 
     let Some(index_slot) = shader.index_field else {
         return dispatched;
     };
+    if let DispatchSpec::FromFieldMaskAdd(field, mask, addend) = shader.dispatch {
+        return mask_add_invocations(shader, params, dispatched, index_slot, field, mask, addend);
+    }
     let (limit_slot, limit_mask) = match shader.dispatch {
         DispatchSpec::FromField(slot) => (slot, u32::MAX),
         DispatchSpec::FromFieldMask(slot, mask) => (slot, mask),
@@ -89,6 +92,50 @@ pub(crate) fn invocation_count(shader: &Shader<'_>, params: &[u32], dispatched: 
         trips = trips.saturating_add(1);
     }
     dispatched.max(trips)
+}
+
+
+fn mask_add_invocations(
+    shader: &Shader<'_>,
+    params: &[u32],
+    dispatched: u32,
+    index_slot: usize,
+    field: usize,
+    mask: u32,
+    addend: u32,
+) -> u32 {
+    let Ok(stride) = u32::try_from(shader.max_stride_bytes.max(0)) else {
+        return dispatched;
+    };
+    if stride < 4 || stride % 4 != 0 {
+        return dispatched;
+    }
+    let Some(&start) = params.get(index_slot) else {
+        return dispatched;
+    };
+    let Some(limit) = params.get(field).copied() else {
+        return dispatched;
+    };
+    let limit = (limit & mask).wrapping_add(addend);
+    if start > limit {
+        return dispatched;
+    }
+    let span = limit - start;
+    let cursor = format!("params.p{index_slot} + {stride}u * gid.x");
+    let bound = format!("((params.p{field} & {mask}u) + {addend}u)");
+    let inclusive = shader.source.contains(&format!("if ({cursor} > {bound})"));
+    let strict = shader.source.contains(&format!("if ({cursor} >= {bound})"));
+    let trips = if inclusive {
+        span / stride + 1
+    } else if strict {
+        span.div_ceil(stride)
+    } else {
+        return dispatched;
+    };
+    if trips == 0 {
+        return dispatched;
+    }
+    dispatched.min(trips)
 }
 
 
