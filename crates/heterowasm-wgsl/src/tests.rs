@@ -5584,3 +5584,39 @@ fn downward_subtract_records_negative_step() -> TestResult {
     assert!(saw_subtract, "back-edge update must be I32Sub");
     Ok(())
 }
+
+
+#[test]
+fn inclusive_exit_guard_keeps_the_boundary_iteration() -> TestResult {
+    let kernel = lower_bytes(&wat::parse_str(
+        r#"(module
+             (memory 1 1)
+             (func $inclusive (param $n i32)
+               (local $i i32)
+               (block $exit
+                 (loop $loop
+                   (br_if $exit (i32.gt_u (local.get $i) (local.get $n)))
+                   (i32.store
+                     (i32.mul (local.get $i) (i32.const 4))
+                     (local.get $i))
+                   (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                   (br $loop)
+                 )
+               )
+             )
+             (export "main" (func $inclusive))
+             (export "mem" (memory 0)))"#,
+    )?)?;
+
+    assert!(
+        kernel.source.contains("i > params.p"),
+        "inclusive exit must use a strict greater-than guard:\n{}",
+        kernel.source
+    );
+    assert!(
+        !kernel.source.contains("i >= params.p"),
+        "the boundary iteration would be skipped by a >= guard:\n{}",
+        kernel.source
+    );
+    Ok(())
+}
