@@ -5,7 +5,7 @@ pub mod planning {
     use heterowasm_legality::{Disposition, LoopLegal};
     use heterowasm_scev::ScalarEvolution;
     use heterowasm_trace::Trace;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     use waffle::entity::EntityRef;
     use waffle::{Block, Func, FuncDecl, Module, Operator, ValueDef};
@@ -89,6 +89,8 @@ pub mod planning {
         pub skipped_exit: usize,
         pub skipped_overlap: usize,
         pub lower_failures: Vec<(String, String)>,
+
+        pub fusion_candidates: HashSet<Func>,
     }
 
     impl LoopPlanSet {
@@ -109,7 +111,9 @@ pub mod planning {
             skipped_exit: 0,
             skipped_overlap: 0,
             lower_failures: Vec::new(),
+            fusion_candidates: HashSet::new(),
         };
+        let mut lowerable_by_func: HashMap<Func, usize> = HashMap::new();
         for func in module.funcs.iter() {
             let Some(body) = module.funcs[func].body() else {
                 continue;
@@ -159,6 +163,7 @@ pub mod planning {
                         continue;
                     }
                 };
+                *lowerable_by_func.entry(func).or_insert(0) += 1;
                 if kernel.dispatch.fixed_trip_is_slower_than_cpu()
                     || kernel.shader_multiplies_still_slower_than_cpu()
                 {
@@ -178,6 +183,11 @@ pub mod planning {
                 });
             }
         }
+        set.fusion_candidates = lowerable_by_func
+            .into_iter()
+            .filter(|(_, count)| *count >= 2)
+            .map(|(func, _)| func)
+            .collect();
         for plan in &set.eligible {
             let overlaps = set.rewritable.iter().any(|existing: &OffloadPlan| {
                 existing.func == plan.func
