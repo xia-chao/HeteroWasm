@@ -1,7 +1,8 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use heterowasm_frontend::waffle::entity::EntityRef;
-use heterowasm_frontend::waffle::{FuncDecl, Module};
+use heterowasm_frontend::waffle::{Func, FuncDecl, Module};
 use heterowasm_frontend::{expand_all_bodies, load_module, normalize_bulk_memory};
 use heterowasm_trace::{Stage, Trace};
 use heterowasm_wgsl::{artifact, Artifact, LoopPlanSet};
@@ -36,15 +37,16 @@ pub(crate) fn compile(input: &Path, output: &Path, trace: Trace) -> Result<(), C
         source,
     })?;
 
-    let fused = emit_fused(&module, output, &trace)?;
 
-    let fused_rewrite = fused.is_some();
-
-    let plan_set = if fused_rewrite {
+    let plan_set = heterowasm_wgsl::plan_gpu_loops(&module, &trace);
+    let fusion_only: HashSet<Func> = plan_set.fusion_candidates.clone();
+    let fused = if fusion_only.is_empty() {
         None
     } else {
-        Some(heterowasm_wgsl::plan_gpu_loops(&module, &trace))
+        emit_fused(&module, output, &trace, Some(&fusion_only))?
     };
+
+    let fused_rewrite = fused.is_some();
     let KernelEmission {
         written,
         skipped,
@@ -59,12 +61,7 @@ pub(crate) fn compile(input: &Path, output: &Path, trace: Trace) -> Result<(), C
                 emitted: vec![(0, 0, stem)],
             }
         }
-        None => {
-            let plans = plan_set
-                .as_ref()
-                .ok_or_else(|| CliError::Message("missing loop plan".to_string()))?;
-            emit_single_loops(&module, plans, output, &trace)?
-        }
+        None => emit_single_loops(&module, &plan_set, output, &trace)?,
     };
     println!(
         "wrote {written} artifacts, skipped {skipped} loops (failed legality, outside subset, fixed trip below the measured crossover, or fewer than 32 shader multiplies)"
@@ -77,13 +74,7 @@ pub(crate) fn compile(input: &Path, output: &Path, trace: Trace) -> Result<(), C
         );
         return Ok(());
     }
-    let replaced = rewrite_and_write(
-        &mut module,
-        output,
-        &trace,
-        fused_rewrite,
-        plan_set.as_ref(),
-    )?;
+    let replaced = rewrite_and_write(&mut module, output, &trace, fused_rewrite, &plan_set)?;
 
 
     let live: Vec<String> = if fused_rewrite {
@@ -187,9 +178,10 @@ fn emit_fused(
     module: &Module<'_>,
     output: &Path,
     trace: &Trace,
+    only: Option<&HashSet<Func>>,
 ) -> Result<Option<String>, CliError> {
 
-    match heterowasm_wgsl::plan_gpu_fusion(module, trace) {
+    match heterowasm_wgsl::plan_gpu_fusion(module, trace, only) {
         Ok(Some(plan)) => {
             let body = module.funcs[plan.func].body().ok_or_else(|| {
                 CliError::Message("fusion target is not a function body".to_string())
@@ -262,7 +254,7 @@ fn rewrite_and_write(
     output: &Path,
     trace: &Trace,
     fused: bool,
-    plan_set: Option<&LoopPlanSet>,
+    plan_set: &LoopPlanSet,
 ) -> Result<Vec<(usize, usize)>, CliError> {
     let outcome = if fused {
         heterowasm_wgsl::rewrite_module_fused(module, trace).map(|outcome| {
@@ -275,8 +267,7 @@ fn rewrite_and_write(
                 .collect()
         })
     } else {
-        let plans = plan_set.ok_or_else(|| CliError::Message("missing loop plan".to_string()))?;
-        heterowasm_wgsl::rewrite_with_plans(module, &plans.rewritable, trace)
+        heterowasm_wgsl::rewrite_with_plans(module, &plan_set.rewritable, trace)
     };
 
     let replaced = match outcome {

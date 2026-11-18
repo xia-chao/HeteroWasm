@@ -6,7 +6,7 @@ use heterowasm_bounds::LoopExtent;
 use heterowasm_cfg::{ControlFlow, NaturalLoop};
 use heterowasm_scev::{canonical_value, ScalarEvolution};
 use heterowasm_trace::{Stage, Trace};
-use waffle::{Block, FunctionBody, Module, Terminator, Value};
+use waffle::{Block, Func, FunctionBody, Module, Terminator, Value};
 
 use crate::conformance;
 use crate::lower::lower;
@@ -208,8 +208,15 @@ pub(crate) fn resolve_at_entry(body: &FunctionBody, value: Value) -> Result<Valu
 pub fn plan_gpu_fusion(
     module: &Module<'_>,
     trace: &Trace,
+    only: Option<&HashSet<Func>>,
 ) -> Result<Option<GpuFusionPlan>, String> {
     for func in module.funcs.iter() {
+
+        if let Some(only) = only {
+            if !only.contains(&func) {
+                continue;
+            }
+        }
         let Some(body) = module.funcs[func].body() else {
             continue;
         };
