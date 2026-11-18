@@ -1,8 +1,8 @@
 # Boundaries on a real binary
 
 The README table uses small synthetic loops. This page records what the compiler does on a real
-workload: a Draco decoder build, 1.6 MB of Wasm. It is here so that the size of the GPU path is
-visible before someone points the tool at their own program.
+workload: a 286 KB Draco decoder binary. It is here so that the size of the GPU path is visible
+before someone points the tool at their own program.
 
 ## How to read the output
 

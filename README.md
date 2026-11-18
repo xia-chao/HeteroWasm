@@ -6,6 +6,15 @@ It takes a WebAssembly program and finds the data-parallel loops that can be sho
 
 The shader is generated from the program. It is not a second implementation written by hand. Where a region never leaves the CPU, the original WebAssembly is the program that runs.
 
+## How it compiles
+
+1. **Discovery.** Natural loops, induction variables, affine addresses, loop bounds. A loop that cannot be reduced to that form is out.
+2. **Proof.** Four obligations — control, memory, dependence, effects. A loop is offloaded only when every one is proven, or when a runtime guard can cover it.
+3. **Cost.** Fewer than 32 multiplies in the loop body, or fewer than 65536 dynamic trips, and the loop stays on the CPU. Both numbers come from measurements on this machine, not from a guess.
+4. **Emission.** Each qualified loop becomes a WGSL compute kernel plus a manifest; the module is rewritten so the loop turns into one `__hw_dispatch` call. Everything else keeps the original code.
+
+The analysis of a function runs **once** per compile: the same decision drives kernel emission and the module rewrite, so the two do not re-analyse the program. Fusion (two loops merged into one kernel) is planned only inside functions that can contain a fusable pair — a loop that writes an intermediate region and a second loop that reads it, both in the same function and both lowerable.
+
 ## Where the work stands
 
 The compiler is still under development. The GPU path measured so far is Metal, on an Apple M2.
@@ -38,21 +47,60 @@ The loops behind those numbers are integer load, store, add, subtract, and multi
 - nested loops, indirect indexes, unaligned access
 - fewer than 32 multiplies, or fewer than 65536 trips
 
-What that boundary looks like on a real decoder build, and how to read the refusal lines:
-[docs/BOUNDARIES.md](docs/BOUNDARIES.md).
-
 A short loop is cheaper on the CPU.
+
+## Compiling
 
 Rust 1.98 or newer.
 
 ```bash
 cargo build -p heterowasm-cli --release
+heterowasm compile corpus/real/draco_decoder.wasm --output out
+```
 
-heterowasm compile corpus/synthetic/intensity/poly64.wat --output out
+`compile` writes one directory:
+
+| file | contents |
+| --- | --- |
+| `original.wasm` | the input module — the CPU implementation and the correctness reference |
+| `<kernel>.wgsl` + `<kernel>.json` | one compute shader and its manifest (fields, results, dispatch) |
+| `kernels.json` | the kernels in the order the rewritten module calls them |
+| `rewritten.wasm` | the module with the offloaded loops replaced by `__hw_dispatch` calls |
+
+Real inputs on the same machine, release build, median of six runs:
+
+| program | size | compile |
+| --- | --- | --- |
+| Draco decoder | 286 KB | ≈0.5 s |
+| Basis transcoder | 490 KB | ≈0.35 s |
+
+On the Draco build the rewritten program dispatches nothing: one loop clears the gate, and the decode path does not enter it. [docs/BOUNDARIES.md](docs/BOUNDARIES.md) has the per-stage counts and how to read the refusal lines — `compile` prints one `skip` line per refusal, and `analyze --trace-jsonl` writes one event per obligation.
+
+To inspect decisions without writing artifacts:
+
+```bash
+heterowasm analyze corpus/real/draco_decoder.wasm --json
+heterowasm analyze corpus/real/draco_decoder.wasm --trace-jsonl trace.jsonl
+```
+
+## Running and measuring an artifact
+
+```bash
+heterowasm run out --entry main --arg 0 --arg 524288 --arg 65536
 heterowasm bench out --entry main --arg 0 --arg 524288 --arg 65536 --repeat 5
 ```
 
-The three arguments are the output byte offset, the input byte offset, and the element count. Those two buffers do not overlap. `--repeat 5` is the number behind the table. The loop writes `out[i]` from a polynomial in `in[i]`. The buffers are either exactly the same range, in place, or fully apart. A partial overlap is rejected: parallel iterations would see the original memory, and the Wasm loop would see values written by earlier iterations.
+The three arguments are the output byte offset, the input byte offset, and the element count. Those two buffers do not overlap. `--repeat 5` is the number behind the table above. `bench` runs the CPU and GPU paths, compares the memories first, and only then reports a ratio — a result that is wrong is never fast.
+
+The buffers are either exactly the same range, in place, or fully apart. A partial overlap is rejected: parallel iterations would see the original memory, and the Wasm loop would see values written by earlier iterations.
+
+## Testing
+
+```bash
+cargo test --workspace
+```
+
+The suite currently reports 168 passing tests. Tests that read the large compiled corpus artifacts skip when those artifacts are absent, so a clean clone is green.
 
 ## License
 
