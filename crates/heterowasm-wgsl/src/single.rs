@@ -3,22 +3,13 @@ use heterowasm_bounds::LoopExtent;
 use heterowasm_cfg::ControlFlow;
 use heterowasm_legality::{Disposition, LoopLegal};
 use heterowasm_scev::{canonical_value, ScalarEvolution};
-use heterowasm_trace::{Stage, Trace};
-use waffle::entity::EntityRef;
+use heterowasm_trace::Trace;
 use waffle::{Block, Func, Module, Terminator, Value, ValueDef};
 
 use crate::lower::lower;
+use crate::plans::OffloadPlan;
 use crate::region::{offload_region_calls, RegionCalls};
-use crate::types::{Dispatch, DispatchShape, Kernel, LoopRegion};
-
-
-pub(crate) struct OffloadPlan {
-    pub(crate) func: Func,
-    pub(crate) header: Block,
-    pub(crate) exit: Block,
-    pub(crate) members: Vec<Block>,
-    pub(crate) kernel: Kernel,
-}
+use crate::types::{DispatchShape, LoopRegion};
 
 
 pub(crate) fn plan_first_gpu_loop(
@@ -141,136 +132,8 @@ pub fn rewrite_module_for_gpu(
     module: &mut Module<'_>,
     trace: &Trace,
 ) -> Result<Vec<(usize, usize)>, String> {
-
-    fn runtime_trip(kernel: &crate::Kernel) -> Option<crate::region::RuntimeTrip> {
-        let (limit, mask) = match kernel.dispatch {
-            Dispatch::FromField(slot) => (slot, u32::MAX),
-            Dispatch::FromFieldMask(slot, mask) => (slot, mask),
-            _ => return None,
-        };
-        if let Some(start) = kernel.index_field {
-            let Ok(stride) = u32::try_from(kernel.max_stride_bytes) else {
-                return None;
-            };
-            if stride < 4 || stride % 4 != 0 {
-                return None;
-            }
-            let guard = format!("params.p{start} + 4u * gid.x >= params.p{limit}");
-            if !kernel.source.contains(&guard) {
-                return None;
-            }
-            return Some(crate::region::RuntimeTrip {
-                start_field: Some(start),
-                limit_field: limit,
-                stride_bytes: stride,
-                mask,
-            });
-        }
-        Some(crate::region::RuntimeTrip {
-            start_field: None,
-            limit_field: limit,
-            stride_bytes: 1,
-            mask,
-        })
-    }
-
-    fn collect(module: &Module<'_>, trace: &Trace) -> Vec<OffloadPlan> {
-        let mut plans = Vec::new();
-        for func in module.funcs.iter() {
-            let Some(body) = module.funcs[func].body() else {
-                continue;
-            };
-            for natural_loop in ControlFlow::analyze(body, trace).natural_loops(body, trace) {
-                let evolution = ScalarEvolution::analyze(body, &natural_loop, trace);
-                let recovery = AddressRecovery::analyze(body, &evolution, trace);
-                let accesses: Vec<_> = recovery
-                    .accesses()
-                    .iter()
-                    .filter(|access| natural_loop.blocks.contains(&access.block))
-                    .cloned()
-                    .collect();
-                let extent = LoopExtent::analyze(body, &natural_loop, &evolution);
-                let legality =
-                    LoopLegal::judge(body, &natural_loop, &accesses, &evolution, module, trace);
-                if !matches!(
-                    legality.disposition(),
-                    Disposition::Gpu | Disposition::GpuAfterGuard
-                ) {
-                    continue;
-                }
-                let Ok(kernel) = lower(
-                    body,
-                    &natural_loop,
-                    &accesses,
-                    &evolution,
-                    extent,
-                    64,
-                    trace,
-                ) else {
-                    continue;
-                };
-                if kernel.dispatch.fixed_trip_is_slower_than_cpu()
-                    || kernel.shader_multiplies_still_slower_than_cpu()
-                {
-                    continue;
-                }
-                let Ok(exit) = loop_exit(body, &natural_loop.blocks) else {
-                    continue;
-                };
-                let overlaps = plans.iter().any(|plan: &OffloadPlan| {
-                    plan.func == func
-                        && natural_loop
-                            .blocks
-                            .iter()
-                            .any(|block| plan.members.contains(block))
-                });
-                if overlaps {
-                    continue;
-                }
-                plans.push(OffloadPlan {
-                    func,
-                    header: natural_loop.header,
-                    exit,
-                    members: natural_loop.blocks.clone(),
-                    kernel,
-                });
-            }
-        }
-        plans
-    }
-
-    let plans = collect(module, trace);
-    if plans.is_empty() {
-        return Err("no extractable loop found".to_string());
-    }
-    let mut replaced = Vec::new();
-    for (index, plan) in plans.into_iter().enumerate() {
-        let selector = u32::try_from(index).map_err(|_| "kernel index exceeds u32".to_string())?;
-        if let Err(reason) = offload_loop(
-            module,
-            plan.func,
-            LoopRegion {
-                header: plan.header,
-                exit: plan.exit,
-                members: &plan.members,
-            },
-            &plan.kernel.fields,
-            selector,
-            runtime_trip(&plan.kernel),
-        ) {
-            if replaced.is_empty() {
-                return Err(reason);
-            }
-            trace
-                .info(Stage::Wgsl, "rewrite stopped")
-                .field("reason", reason)
-                .field("replaced", replaced.len())
-                .emit();
-            break;
-        }
-        replaced.push((plan.func.index(), plan.header.index()));
-    }
-    Ok(replaced)
+    let plans = crate::plans::plan_gpu_loops(module, trace);
+    crate::plans::rewrite_with_plans(module, &plans.rewritable, trace)
 }
 
 
