@@ -10,7 +10,6 @@ use wasmtime::{Caller, Engine, Extern, Instance, Linker, Memory, Module, Store, 
 
 use clap as _;
 use heterowasm_address as _;
-use heterowasm_bounds as _;
 use heterowasm_cfg as _;
 use heterowasm_cli as _;
 use heterowasm_dependence as _;
