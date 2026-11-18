@@ -5,12 +5,69 @@ pub mod planning {
     use heterowasm_legality::{Disposition, LoopLegal};
     use heterowasm_scev::ScalarEvolution;
     use heterowasm_trace::Trace;
+    use std::collections::HashSet;
+
     use waffle::entity::EntityRef;
-    use waffle::{Block, Func, FuncDecl, Module};
+    use waffle::{Block, Func, FuncDecl, Module, Operator, ValueDef};
 
     use crate::lower::lower;
     use crate::single::{loop_exit, offload_loop};
     use crate::types::{Dispatch, Kernel, LoopRegion};
+
+
+    fn scan_operators(body: &waffle::FunctionBody, members: &HashSet<Block>) -> (bool, bool) {
+        let mut side_effects = false;
+        let mut has_store = false;
+        for value in body.values.iter() {
+            if !members.contains(&body.value_blocks[value]) {
+                continue;
+            }
+            let Some(ValueDef::Operator(operator, _, _)) = body.values.get(value) else {
+                continue;
+            };
+            if matches!(
+                operator,
+                Operator::Call { .. }
+                    | Operator::CallIndirect { .. }
+                    | Operator::MemoryCopy { .. }
+                    | Operator::MemoryFill { .. }
+                    | Operator::MemoryGrow { .. }
+                    | Operator::GlobalSet { .. }
+                    | Operator::TableSet { .. }
+                    | Operator::TableGrow { .. }
+                    | Operator::Unreachable
+            ) {
+                side_effects = true;
+            }
+            if matches!(
+                operator,
+                Operator::I32Store { .. }
+                    | Operator::I64Store { .. }
+                    | Operator::I32Store8 { .. }
+                    | Operator::I32Store16 { .. }
+                    | Operator::I64Store8 { .. }
+                    | Operator::I64Store16 { .. }
+                    | Operator::I64Store32 { .. }
+            ) {
+                has_store = true;
+            }
+        }
+        (side_effects, has_store)
+    }
+
+
+    pub(crate) fn has_side_effects(body: &waffle::FunctionBody, members: &HashSet<Block>) -> bool {
+        scan_operators(body, members).0
+    }
+
+
+    pub(crate) fn cheaply_unrewardable(
+        body: &waffle::FunctionBody,
+        members: &HashSet<Block>,
+    ) -> bool {
+        let (side_effects, has_store) = scan_operators(body, members);
+        side_effects || !has_store
+    }
 
 
     #[derive(Clone)]
@@ -58,6 +115,12 @@ pub mod planning {
                 continue;
             };
             for natural_loop in ControlFlow::analyze(body, trace).natural_loops(body, trace) {
+                let members: HashSet<Block> = natural_loop.blocks.iter().copied().collect();
+                if has_side_effects(body, &members) {
+
+                    set.skipped_legality += 1;
+                    continue;
+                }
                 let evolution = ScalarEvolution::analyze(body, &natural_loop, trace);
                 let recovery = AddressRecovery::analyze(body, &evolution, trace);
                 let accesses: Vec<_> = recovery
@@ -206,4 +269,5 @@ pub mod planning {
     }
 }
 
+pub(crate) use planning::cheaply_unrewardable;
 pub use planning::{plan_gpu_loops, rewrite_with_plans, LoopPlanSet, OffloadPlan};
