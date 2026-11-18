@@ -1,16 +1,10 @@
 use std::path::Path;
 
-use heterowasm_address::AddressRecovery;
-use heterowasm_bounds::LoopExtent;
-use heterowasm_cfg::ControlFlow;
-use heterowasm_dependence::accesses_in_loop;
 use heterowasm_frontend::waffle::entity::EntityRef;
 use heterowasm_frontend::waffle::{FuncDecl, Module};
 use heterowasm_frontend::{expand_all_bodies, load_module, normalize_bulk_memory};
-use heterowasm_legality::{Disposition, LoopLegal};
-use heterowasm_scev::ScalarEvolution;
 use heterowasm_trace::{Stage, Trace};
-use heterowasm_wgsl::{artifact, Artifact};
+use heterowasm_wgsl::{artifact, Artifact, LoopPlanSet};
 
 use crate::error::CliError;
 use crate::types::KernelEmission;
@@ -45,6 +39,12 @@ pub(crate) fn compile(input: &Path, output: &Path, trace: Trace) -> Result<(), C
     let fused = emit_fused(&module, output, &trace)?;
 
     let fused_rewrite = fused.is_some();
+
+    let plan_set = if fused_rewrite {
+        None
+    } else {
+        Some(heterowasm_wgsl::plan_gpu_loops(&module, &trace))
+    };
     let KernelEmission {
         written,
         skipped,
@@ -59,7 +59,12 @@ pub(crate) fn compile(input: &Path, output: &Path, trace: Trace) -> Result<(), C
                 emitted: vec![(0, 0, stem)],
             }
         }
-        None => emit_single_loops(&module, output, &trace)?,
+        None => {
+            let plans = plan_set
+                .as_ref()
+                .ok_or_else(|| CliError::Message("missing loop plan".to_string()))?;
+            emit_single_loops(&module, plans, output, &trace)?
+        }
     };
     println!(
         "wrote {written} artifacts, skipped {skipped} loops (failed legality, outside subset, fixed trip below the measured crossover, or fewer than 32 shader multiplies)"
@@ -72,7 +77,13 @@ pub(crate) fn compile(input: &Path, output: &Path, trace: Trace) -> Result<(), C
         );
         return Ok(());
     }
-    let replaced = rewrite_and_write(&mut module, output, &trace, fused_rewrite)?;
+    let replaced = rewrite_and_write(
+        &mut module,
+        output,
+        &trace,
+        fused_rewrite,
+        plan_set.as_ref(),
+    )?;
 
 
     let live: Vec<String> = if fused_rewrite {
@@ -205,68 +216,34 @@ fn emit_fused(
 
 fn emit_single_loops(
     module: &Module<'_>,
+    plans: &LoopPlanSet,
     output: &Path,
     trace: &Trace,
 ) -> Result<KernelEmission, CliError> {
-    let mut written = 0_usize;
-    let mut skipped = 0_usize;
+    let _ = trace;
+
+    for (name, error) in &plans.lower_failures {
+        eprintln!("skip {name}: {error}");
+    }
     let mut names: Vec<(usize, usize, String)> = Vec::new();
-    for func in module.funcs.iter() {
-        let FuncDecl::Body(_, name, body) = &module.funcs[func] else {
+    for plan in &plans.eligible {
+        let FuncDecl::Body(_, name, body) = &module.funcs[plan.func] else {
             continue;
         };
-        for natural_loop in ControlFlow::analyze(body, trace).natural_loops(body, trace) {
-            let evolution = ScalarEvolution::analyze(body, &natural_loop, trace);
-            let recovery = AddressRecovery::analyze(body, &evolution, trace);
-            let accesses = accesses_in_loop(recovery.accesses(), &natural_loop.blocks);
-            let extent = LoopExtent::analyze(body, &natural_loop, &evolution);
-            let legality =
-                LoopLegal::judge(body, &natural_loop, &accesses, &evolution, module, trace);
-            if !matches!(
-                legality.disposition(),
-                Disposition::Gpu | Disposition::GpuAfterGuard
-            ) {
-                skipped += 1;
-                continue;
-            }
-            let kernel = match heterowasm_wgsl::lower(
-                body,
-                &natural_loop,
-                &accesses,
-                &evolution,
-                extent,
-                64,
-                trace,
-            ) {
-                Ok(kernel) => kernel,
-                Err(error) => {
-                    eprintln!("skip {name}: {error}");
-                    skipped += 1;
-                    continue;
-                }
-            };
-            if kernel.dispatch.fixed_trip_is_slower_than_cpu()
-                || kernel.shader_multiplies_still_slower_than_cpu()
-            {
-                skipped += 1;
-                continue;
-            }
-            let artifact =
-                artifact(&kernel, body).map_err(|error| CliError::Message(error.to_string()))?;
-            let stem = if name.is_empty() {
-                format!("{}-{}", func.index(), natural_loop.header.index())
-            } else {
-                format!("{name}-{}-{}", func.index(), natural_loop.header.index())
-            };
-            write_artifact(output, &stem, &artifact)?;
-            println!("wrote {stem}.wgsl + {stem}.json");
-            names.push((func.index(), natural_loop.header.index(), stem));
-            written += 1;
-        }
+        let artifact =
+            artifact(&plan.kernel, body).map_err(|error| CliError::Message(error.to_string()))?;
+        let stem = if name.is_empty() {
+            format!("{}-{}", plan.func.index(), plan.header.index())
+        } else {
+            format!("{name}-{}-{}", plan.func.index(), plan.header.index())
+        };
+        write_artifact(output, &stem, &artifact)?;
+        println!("wrote {stem}.wgsl + {stem}.json");
+        names.push((plan.func.index(), plan.header.index(), stem));
     }
     Ok(KernelEmission {
-        written,
-        skipped,
+        written: names.len(),
+        skipped: plans.skipped(),
         emitted: names,
     })
 }
@@ -285,6 +262,7 @@ fn rewrite_and_write(
     output: &Path,
     trace: &Trace,
     fused: bool,
+    plan_set: Option<&LoopPlanSet>,
 ) -> Result<Vec<(usize, usize)>, CliError> {
     let outcome = if fused {
         heterowasm_wgsl::rewrite_module_fused(module, trace).map(|outcome| {
@@ -297,7 +275,8 @@ fn rewrite_and_write(
                 .collect()
         })
     } else {
-        heterowasm_wgsl::rewrite_module_for_gpu(module, trace)
+        let plans = plan_set.ok_or_else(|| CliError::Message("missing loop plan".to_string()))?;
+        heterowasm_wgsl::rewrite_with_plans(module, &plans.rewritable, trace)
     };
 
     let replaced = match outcome {
