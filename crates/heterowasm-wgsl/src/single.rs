@@ -159,6 +159,12 @@ pub fn plan_gpu_arity(module: &Module<'_>, trace: &Trace) -> Result<DispatchShap
             continue;
         };
         for natural_loop in ControlFlow::analyze(body, trace).natural_loops(body, trace) {
+
+            let members: std::collections::HashSet<Block> =
+                natural_loop.blocks.iter().copied().collect();
+            if crate::plans::cheaply_unrewardable(body, &members) {
+                continue;
+            }
             let evolution = ScalarEvolution::analyze(body, &natural_loop, trace);
             let recovery = AddressRecovery::analyze(body, &evolution, trace);
             let accesses: Vec<_> = recovery
