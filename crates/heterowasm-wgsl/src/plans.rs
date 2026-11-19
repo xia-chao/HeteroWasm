@@ -2,7 +2,8 @@ pub mod planning {
     use heterowasm_address::AddressRecovery;
     use heterowasm_bounds::LoopExtent;
     use heterowasm_cfg::ControlFlow;
-    use heterowasm_legality::{Disposition, LoopLegal};
+    use heterowasm_ir::Verdict;
+    use heterowasm_legality::{Disposition, LoopLegal, Obligation, ObligationKind};
     use heterowasm_scev::ScalarEvolution;
     use heterowasm_trace::Trace;
     use std::collections::{HashMap, HashSet};
@@ -88,9 +89,33 @@ pub mod planning {
         pub skipped_gate: usize,
         pub skipped_exit: usize,
         pub skipped_overlap: usize,
+
+        pub skipped_illegal: [usize; 4],
+        pub skipped_unknown: [usize; 4],
+
+        pub skipped_side_effects: usize,
         pub lower_failures: Vec<(String, String)>,
 
         pub fusion_candidates: HashSet<Func>,
+    }
+
+
+    fn decisive(obligations: &[Obligation]) -> Option<(usize, bool)> {
+        let chosen = obligations
+            .iter()
+            .find(|obligation| obligation.verdict == Verdict::ProvenIllegal)
+            .or_else(|| {
+                obligations
+                    .iter()
+                    .find(|obligation| obligation.verdict == Verdict::Unknown)
+            })?;
+        let slot = match chosen.kind {
+            ObligationKind::Control => 0,
+            ObligationKind::Memory => 1,
+            ObligationKind::Dependence => 2,
+            ObligationKind::Effects => 3,
+        };
+        Some((slot, chosen.verdict == Verdict::ProvenIllegal))
     }
 
     impl LoopPlanSet {
@@ -110,6 +135,9 @@ pub mod planning {
             skipped_gate: 0,
             skipped_exit: 0,
             skipped_overlap: 0,
+            skipped_illegal: [0; 4],
+            skipped_unknown: [0; 4],
+            skipped_side_effects: 0,
             lower_failures: Vec::new(),
             fusion_candidates: HashSet::new(),
         };
@@ -123,6 +151,7 @@ pub mod planning {
                 if has_side_effects(body, &members) {
 
                     set.skipped_legality += 1;
+                    set.skipped_side_effects += 1;
                     continue;
                 }
                 let evolution = ScalarEvolution::analyze(body, &natural_loop, trace);
@@ -141,6 +170,12 @@ pub mod planning {
                     Disposition::Gpu | Disposition::GpuAfterGuard
                 ) {
                     set.skipped_legality += 1;
+                    match decisive(legality.obligations()) {
+                        Some((slot, true)) => set.skipped_illegal[slot] += 1,
+                        Some((slot, false)) => set.skipped_unknown[slot] += 1,
+
+                        None => set.skipped_unknown[0] += 1,
+                    }
                     continue;
                 }
                 let kernel = match lower(

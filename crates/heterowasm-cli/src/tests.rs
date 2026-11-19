@@ -48,6 +48,10 @@ fn json_should_carry_schema_and_counts() {
     assert!(text.contains("\"disposition\":\"gpu_after_guard\""));
     assert!(text.contains("\"guards\":[\"alias\",\"bounds\"]"));
     assert!(text.contains("\"summary\":{\"loops\":1"));
+
+    assert!(text.contains(
+        "\"cpu_reasons\":{\"proven_illegal\":{\"control\":0,\"memory\":0,\"dependence\":0,\"effects\":0},\"unknown\":{\"control\":0,\"memory\":0,\"dependence\":0,\"effects\":0}}"
+    ));
 }
 
 

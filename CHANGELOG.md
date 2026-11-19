@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- `compile` prints a breakdown of why loops stayed on the CPU: side-effecting operators,
+  legality split by obligation, the cost gate, lowering, and loops without an exit.
+- `compile --require-offload` exits non-zero when no loop was emitted.
+- `analyze --json` gains `summary.cpu_reasons`, counting CPU loops by the obligation that
+  decided them (`proven_illegal` and `unknown`, per obligation kind).
+- `analyze` prints the same breakdown as "why the rest stays on the CPU".
+- Added Horner bodies with 24 and 40 multiplies; README now has a measured table for both
+  gates (32 multiplies at compile time, 65536 trips at run time).
+
 ## 0.1.0
 
 Source release. No published binary. The GPU path is measured on Apple M2 / Metal only.

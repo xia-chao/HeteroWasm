@@ -38,6 +38,9 @@ pub enum Command {
 
         #[arg(long)]
         trace_jsonl: Option<PathBuf>,
+
+        #[arg(long)]
+        require_offload: bool,
     },
 
     Run {
