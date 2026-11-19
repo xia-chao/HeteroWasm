@@ -145,13 +145,8 @@ fn lower_fields(
     trace: &Trace,
 ) -> Result<Vec<usize>, String> {
     let evolution = ScalarEvolution::analyze(body, natural_loop, trace);
-    let recovery = AddressRecovery::analyze(body, &evolution, trace);
-    let accesses: Vec<_> = recovery
-        .accesses()
-        .iter()
-        .filter(|access| natural_loop.blocks.contains(&access.block))
-        .cloned()
-        .collect();
+    let recovery = AddressRecovery::analyze_loop(body, &evolution, &natural_loop.blocks, trace);
+    let accesses: Vec<_> = recovery.accesses().to_vec();
     let extent = LoopExtent::analyze(body, natural_loop, &evolution);
     let kernel: Kernel = lower(body, natural_loop, &accesses, &evolution, extent, 64, trace)
         .map_err(|error| error.to_string())?;

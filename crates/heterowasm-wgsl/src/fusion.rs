@@ -43,12 +43,9 @@ pub(crate) fn collect_region_uses(body: &FunctionBody, trace: &Trace) -> Vec<Col
     let mut result = Vec::new();
     for natural_loop in ControlFlow::analyze(body, trace).natural_loops(body, trace) {
         let evolution = ScalarEvolution::analyze(body, &natural_loop, trace);
-        let recovery = AddressRecovery::analyze(body, &evolution, trace);
+        let recovery = AddressRecovery::analyze_loop(body, &evolution, &natural_loop.blocks, trace);
         let mut uses: RegionUses = BTreeMap::new();
         for access in recovery.accesses() {
-            if !natural_loop.blocks.contains(&access.block) {
-                continue;
-            }
             let Some(normalized) = access.normalized(&evolution) else {
                 continue;
             };
@@ -230,13 +227,9 @@ pub fn plan_gpu_fusion(
         let lower_one = |index: usize| -> Result<Kernel, String> {
             let (natural_loop, _, _) = &collected[index];
             let evolution = ScalarEvolution::analyze(body, natural_loop, trace);
-            let recovery = AddressRecovery::analyze(body, &evolution, trace);
-            let accesses: Vec<_> = recovery
-                .accesses()
-                .iter()
-                .filter(|access| natural_loop.blocks.contains(&access.block))
-                .cloned()
-                .collect();
+            let recovery =
+                AddressRecovery::analyze_loop(body, &evolution, &natural_loop.blocks, trace);
+            let accesses: Vec<_> = recovery.accesses().to_vec();
             let extent = LoopExtent::analyze(body, natural_loop, &evolution);
             lower(body, natural_loop, &accesses, &evolution, extent, 64, trace)
                 .map_err(|error| error.to_string())

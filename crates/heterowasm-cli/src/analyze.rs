@@ -2,7 +2,6 @@ use std::path::Path;
 
 use heterowasm_address::AddressRecovery;
 use heterowasm_cfg::ControlFlow;
-use heterowasm_dependence::accesses_in_loop;
 use heterowasm_frontend::waffle::entity::EntityRef;
 use heterowasm_frontend::waffle::{FuncDecl, FunctionBody, Module};
 use heterowasm_frontend::{expand_all_bodies, load_module, normalize_bulk_memory};
@@ -66,8 +65,8 @@ fn collect_function(
     let mut loop_reports = Vec::with_capacity(loops.len());
     for natural_loop in &loops {
         let evolution = ScalarEvolution::analyze(body, natural_loop, trace);
-        let recovery = AddressRecovery::analyze(body, &evolution, trace);
-        let accesses = accesses_in_loop(recovery.accesses(), &natural_loop.blocks);
+        let recovery = AddressRecovery::analyze_loop(body, &evolution, &natural_loop.blocks, trace);
+        let accesses = recovery.accesses().to_vec();
         let legal = LoopLegal::judge(body, natural_loop, &accesses, &evolution, module, trace);
 
         loop_reports.push(LoopReport {
