@@ -3,6 +3,7 @@ use heterowasm_bounds as _;
 use heterowasm_cfg as _;
 use heterowasm_corpus as _;
 use heterowasm_frontend as _;
+use heterowasm_ir as _;
 use heterowasm_legality as _;
 use heterowasm_scev as _;
 use heterowasm_trace as _;

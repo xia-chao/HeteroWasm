@@ -1,5 +1,5 @@
 use heterowasm_ir::Verdict;
-use heterowasm_legality::{Disposition, GuardKind, Obligation};
+use heterowasm_legality::{Disposition, GuardKind, Obligation, ObligationKind};
 
 
 pub(crate) struct KernelEmission {
@@ -43,6 +43,21 @@ pub struct Totals {
     pub(crate) gpu: usize,
     pub(crate) gpu_after_guard: usize,
     pub(crate) cpu: usize,
+
+    pub(crate) illegal: [usize; 4],
+    pub(crate) unknown: [usize; 4],
+}
+
+impl Totals {
+
+    fn slot(kind: ObligationKind) -> usize {
+        match kind {
+            ObligationKind::Control => 0,
+            ObligationKind::Memory => 1,
+            ObligationKind::Dependence => 2,
+            ObligationKind::Effects => 3,
+        }
+    }
 }
 
 impl AnalysisReport {
@@ -57,7 +72,28 @@ impl AnalysisReport {
                 match loop_report.disposition {
                     Disposition::Gpu => totals.gpu += 1,
                     Disposition::GpuAfterGuard => totals.gpu_after_guard += 1,
-                    Disposition::Cpu => totals.cpu += 1,
+                    Disposition::Cpu => {
+                        totals.cpu += 1;
+
+                        let decisive = loop_report
+                            .obligations
+                            .iter()
+                            .find(|obligation| obligation.verdict == Verdict::ProvenIllegal)
+                            .or_else(|| {
+                                loop_report
+                                    .obligations
+                                    .iter()
+                                    .find(|obligation| obligation.verdict == Verdict::Unknown)
+                            });
+                        if let Some(obligation) = decisive {
+                            let slot = Totals::slot(obligation.kind);
+                            if obligation.verdict == Verdict::ProvenIllegal {
+                                totals.illegal[slot] += 1;
+                            } else {
+                                totals.unknown[slot] += 1;
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -20,6 +20,7 @@ heterowasm-cfg.workspace = true
 heterowasm-scev.workspace = true
 heterowasm-trace.workspace = true
 heterowasm-legality.workspace = true
+heterowasm-ir.workspace = true
 waffle.workspace = true
 # **Declare explicitly; do not rely on waffle re-exports.** Measured reason:
 # `wasm_encoder::reencode` needs the `wasmparser` feature of `wasm-encoder`,
