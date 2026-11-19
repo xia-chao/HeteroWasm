@@ -1,7 +1,9 @@
+use std::collections::HashSet;
+
 use heterowasm_scev::{canonical_value, constant_value, AffineForm, ScalarEvolution};
 use heterowasm_trace::{Stage, Trace};
 use waffle::entity::EntityRef;
-use waffle::{FunctionBody, MemoryArg, Operator, Value, ValueDef};
+use waffle::{Block, FunctionBody, MemoryArg, Operator, Value, ValueDef};
 
 use crate::consts::ADDRESS_NOT_AFFINE;
 use crate::types::{AccessKind, AddressConclusion, MemoryAccess};
@@ -15,10 +17,36 @@ pub struct AddressRecovery {
 impl AddressRecovery {
 
     pub fn analyze(body: &FunctionBody, evolution: &ScalarEvolution, trace: &Trace) -> Self {
+        Self::analyze_in(body, evolution, trace, None)
+    }
+
+
+    pub fn analyze_loop(
+        body: &FunctionBody,
+        evolution: &ScalarEvolution,
+        blocks: &[Block],
+        trace: &Trace,
+    ) -> Self {
+        Self::analyze_in(body, evolution, trace, Some(blocks))
+    }
+
+    fn analyze_in(
+        body: &FunctionBody,
+        evolution: &ScalarEvolution,
+        trace: &Trace,
+        blocks: Option<&[Block]>,
+    ) -> Self {
         let _scope = trace.stage(Stage::AddressRecovery, "function");
         let mut accesses = Vec::new();
 
+        let members: Option<HashSet<Block>> = blocks.map(|blocks| blocks.iter().copied().collect());
+
         for value in body.values.iter() {
+            if let Some(members) = &members {
+                if !members.contains(&body.value_blocks[value]) {
+                    continue;
+                }
+            }
             let Some(ValueDef::Operator(operator, args, _)) = body.values.get(value) else {
                 continue;
             };
