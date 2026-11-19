@@ -20,7 +20,6 @@ workspace = true
 [dependencies]
 heterowasm-address.workspace = true
 heterowasm-cfg.workspace = true
-heterowasm-dependence.workspace = true
 heterowasm-eval.workspace = true
 heterowasm-frontend.workspace = true
 heterowasm-ir.workspace = true

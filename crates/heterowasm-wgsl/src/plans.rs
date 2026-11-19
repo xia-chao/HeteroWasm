@@ -155,13 +155,9 @@ pub mod planning {
                     continue;
                 }
                 let evolution = ScalarEvolution::analyze(body, &natural_loop, trace);
-                let recovery = AddressRecovery::analyze(body, &evolution, trace);
-                let accesses: Vec<_> = recovery
-                    .accesses()
-                    .iter()
-                    .filter(|access| natural_loop.blocks.contains(&access.block))
-                    .cloned()
-                    .collect();
+                let recovery =
+                    AddressRecovery::analyze_loop(body, &evolution, &natural_loop.blocks, trace);
+                let accesses: Vec<_> = recovery.accesses().to_vec();
                 let extent = LoopExtent::analyze(body, &natural_loop, &evolution);
                 let legality =
                     LoopLegal::judge(body, &natural_loop, &accesses, &evolution, module, trace);

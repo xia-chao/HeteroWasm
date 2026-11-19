@@ -12,7 +12,6 @@ use clap as _;
 use heterowasm_address as _;
 use heterowasm_cfg as _;
 use heterowasm_cli as _;
-use heterowasm_dependence as _;
 use heterowasm_eval as _;
 use heterowasm_frontend as _;
 use heterowasm_ir as _;
