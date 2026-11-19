@@ -11,7 +11,12 @@ use crate::error::CliError;
 use crate::types::KernelEmission;
 
 
-pub(crate) fn compile(input: &Path, output: &Path, trace: Trace) -> Result<(), CliError> {
+pub(crate) fn compile(
+    input: &Path,
+    output: &Path,
+    trace: Trace,
+    require_offload: bool,
+) -> Result<(), CliError> {
     let _scope = trace.stage(Stage::Runtime, "compile");
     let raw = std::fs::read(input).map_err(|source| CliError::Read {
         path: input.to_path_buf(),
@@ -63,9 +68,40 @@ pub(crate) fn compile(input: &Path, output: &Path, trace: Trace) -> Result<(), C
         }
         None => emit_single_loops(&module, &plan_set, output, &trace)?,
     };
-    println!(
-        "wrote {written} artifacts, skipped {skipped} loops (failed legality, outside subset, fixed trip below the measured crossover, or fewer than 32 shader multiplies)"
-    );
+
+    if fused_rewrite {
+        println!("wrote {written} artifacts (fusion path; single-loop kernels are not emitted)");
+    } else {
+        const KINDS: [&str; 4] = ["control", "memory", "dependence", "effects"];
+        let mut legality = Vec::new();
+        let mut legality_total = 0;
+        for (index, kind) in KINDS.iter().enumerate() {
+            let count = plan_set.skipped_illegal[index] + plan_set.skipped_unknown[index];
+            legality_total += count;
+            if count > 0 {
+                legality.push(format!("{kind} {count}"));
+            }
+        }
+
+        println!(
+            "wrote {written} artifacts, skipped {skipped} loops: {} with side effects (calls, bulk memory, global/table writes), {legality_total} by legality ({}), {} below the cost gate, {} not lowerable, {} without an exit",
+            plan_set.skipped_side_effects,
+            if legality.is_empty() {
+                "none".to_string()
+            } else {
+                legality.join(", ")
+            },
+            plan_set.skipped_gate,
+            plan_set.skipped_lower,
+            plan_set.skipped_exit,
+        );
+    }
+
+    if require_offload && written == 0 {
+        return Err(CliError::Message(
+            "no loop was offloaded in this run (--require-offload)".to_string(),
+        ));
+    }
 
 
     if !prepared.injected_from_wat {

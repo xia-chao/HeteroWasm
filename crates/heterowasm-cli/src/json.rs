@@ -1,8 +1,17 @@
 use heterowasm_eval::{CaseOutcome, Report as EvalReport};
+use heterowasm_legality::ObligationKind;
 use heterowasm_trace::escape_json_into;
 
 use crate::consts::{EVAL_SCHEMA, SCHEMA};
 use crate::types::{AnalysisReport, FunctionReport, LoopReport, Totals};
+
+
+const KINDS: [ObligationKind; 4] = [
+    ObligationKind::Control,
+    ObligationKind::Memory,
+    ObligationKind::Dependence,
+    ObligationKind::Effects,
+];
 
 
 pub fn render_json(report: &AnalysisReport) -> String {
@@ -109,6 +118,28 @@ fn write_totals_json(totals: &Totals, out: &mut String) {
     push_usize(totals.gpu_after_guard, out);
     out.push_str(",\"cpu\":");
     push_usize(totals.cpu, out);
+
+    out.push_str(",\"cpu_reasons\":{\"proven_illegal\":{");
+    for (index, kind) in KINDS.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push('"');
+        out.push_str(kind.as_str());
+        out.push_str("\":");
+        push_usize(totals.illegal[index], out);
+    }
+    out.push_str("},\"unknown\":{");
+    for (index, kind) in KINDS.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push('"');
+        out.push_str(kind.as_str());
+        out.push_str("\":");
+        push_usize(totals.unknown[index], out);
+    }
+    out.push_str("}}");
     out.push('}');
 }
 

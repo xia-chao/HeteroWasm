@@ -26,6 +26,12 @@ $ heterowasm analyze draco_decoder.wasm --trace-jsonl trace.jsonl
 The trace carries one event per obligation (control, memory, dependence, effects) with its verdict
 and reason, plus the loop-level disposition (`gpu`, `gpu_after_guard`, `cpu`).
 
+`compile` also ends with a one-line breakdown. It reports the **first** refusal it reaches, so loops
+that contain calls or other side-effecting operators are counted there — before any obligation is
+judged — and the rest are split by the obligation that decided them. `analyze` runs the full chain
+and reports the decisive obligation instead, which is why the two breakdowns do not have to match
+number for number.
+
 ## The numbers
 
 Numbers below are from one pass over the decoder: 962 natural loops.

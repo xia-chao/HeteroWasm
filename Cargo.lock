@@ -956,6 +956,7 @@ dependencies = [
  "heterowasm-cfg",
  "heterowasm-corpus",
  "heterowasm-frontend",
+ "heterowasm-ir",
  "heterowasm-legality",
  "heterowasm-scev",
  "heterowasm-trace",

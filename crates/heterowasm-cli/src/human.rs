@@ -1,9 +1,17 @@
 use heterowasm_eval::{
     CaseClass, Report as EvalReport, GATE_1_MAX_UNKNOWN, GATE_1_MIN_E1, GATE_1_MIN_E2,
 };
-use heterowasm_legality::{GuardKind, Obligation};
+use heterowasm_legality::{GuardKind, Obligation, ObligationKind};
 
 use crate::types::AnalysisReport;
+
+
+const KINDS: [ObligationKind; 4] = [
+    ObligationKind::Control,
+    ObligationKind::Memory,
+    ObligationKind::Dependence,
+    ObligationKind::Effects,
+];
 
 
 pub(crate) fn render_human(report: &AnalysisReport) {
@@ -51,6 +59,31 @@ pub(crate) fn render_human(report: &AnalysisReport) {
     println!("  direct GPU     {}", totals.gpu);
     println!("  GPU after guard {}", totals.gpu_after_guard);
     println!("  fall back CPU  {}", totals.cpu);
+
+
+    let mut reasons: Vec<(String, usize)> = Vec::new();
+    for (index, kind) in KINDS.iter().enumerate() {
+        if totals.illegal[index] > 0 {
+            reasons.push((
+                format!("{} (proven illegal)", kind.as_str()),
+                totals.illegal[index],
+            ));
+        }
+        if totals.unknown[index] > 0 {
+            reasons.push((
+                format!("{} (unproven)", kind.as_str()),
+                totals.unknown[index],
+            ));
+        }
+    }
+    if !reasons.is_empty() {
+        reasons.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+        println!();
+        println!("── why the rest stays on the CPU ─────────────────────");
+        for (label, count) in reasons {
+            println!("  {label:<26}{count:>6}");
+        }
+    }
 
     println!();
     println!("── coverage ───────────────────────────────────────────");
