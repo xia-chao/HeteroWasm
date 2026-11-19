@@ -22,13 +22,9 @@ pub(crate) fn plan_first_gpu_loop(
         };
         for natural_loop in ControlFlow::analyze(body, trace).natural_loops(body, trace) {
             let evolution = ScalarEvolution::analyze(body, &natural_loop, trace);
-            let recovery = AddressRecovery::analyze(body, &evolution, trace);
-            let accesses: Vec<_> = recovery
-                .accesses()
-                .iter()
-                .filter(|access| natural_loop.blocks.contains(&access.block))
-                .cloned()
-                .collect();
+            let recovery =
+                AddressRecovery::analyze_loop(body, &evolution, &natural_loop.blocks, trace);
+            let accesses: Vec<_> = recovery.accesses().to_vec();
             let extent = LoopExtent::analyze(body, &natural_loop, &evolution);
             let legality =
                 LoopLegal::judge(body, &natural_loop, &accesses, &evolution, module, trace);
@@ -166,13 +162,9 @@ pub fn plan_gpu_arity(module: &Module<'_>, trace: &Trace) -> Result<DispatchShap
                 continue;
             }
             let evolution = ScalarEvolution::analyze(body, &natural_loop, trace);
-            let recovery = AddressRecovery::analyze(body, &evolution, trace);
-            let accesses: Vec<_> = recovery
-                .accesses()
-                .iter()
-                .filter(|access| natural_loop.blocks.contains(&access.block))
-                .cloned()
-                .collect();
+            let recovery =
+                AddressRecovery::analyze_loop(body, &evolution, &natural_loop.blocks, trace);
+            let accesses: Vec<_> = recovery.accesses().to_vec();
             let extent = LoopExtent::analyze(body, &natural_loop, &evolution);
             if let Ok(kernel) = lower(
                 body,

@@ -1,7 +1,6 @@
 use heterowasm_address::AddressRecovery;
 use heterowasm_cfg::ControlFlow;
 use heterowasm_corpus::{compiled_cases, Category, Language, CASES};
-use heterowasm_dependence::accesses_in_loop;
 use heterowasm_frontend::{expand_all_bodies, load_module, normalize_bulk_memory};
 use heterowasm_legality::LoopLegal;
 use heterowasm_scev::ScalarEvolution;
@@ -98,8 +97,9 @@ fn analyze_loops(
         let flow = ControlFlow::analyze(body, trace);
         for natural_loop in flow.natural_loops(body, trace) {
             let evolution = ScalarEvolution::analyze(body, &natural_loop, trace);
-            let recovery = AddressRecovery::analyze(body, &evolution, trace);
-            let accesses = accesses_in_loop(recovery.accesses(), &natural_loop.blocks);
+            let recovery =
+                AddressRecovery::analyze_loop(body, &evolution, &natural_loop.blocks, trace);
+            let accesses = recovery.accesses().to_vec();
             let legal =
                 LoopLegal::judge(body, &natural_loop, &accesses, &evolution, &module, trace);
 

@@ -836,7 +836,6 @@ dependencies = [
  "clap",
  "heterowasm-address",
  "heterowasm-cfg",
- "heterowasm-dependence",
  "heterowasm-eval",
  "heterowasm-frontend",
  "heterowasm-ir",
