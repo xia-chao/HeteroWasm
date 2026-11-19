@@ -49,6 +49,35 @@ The loops behind those numbers are integer load, store, add, subtract, and multi
 
 A short loop is cheaper on the CPU.
 
+### Where the gate sits
+
+Two gates decide whether a loop reaches the GPU: one at compile time on the body, one at
+run time on the trip count.
+
+Compile gate, this build, `--repeat 5`, output at byte 0, input at byte 524288, 1 MiB of
+linear memory:
+
+| body | multiplies | kernel emitted |
+| --- | --- | --- |
+| Horner 16 | 16 | no |
+| Horner 24 | 24 | no |
+| Horner 32 | 32 | yes |
+| Horner 40 | 40 | yes |
+
+Runtime gate, same machine, same kernel present:
+
+| body | n | dispatched | CPU | GPU | verdict |
+| --- | --- | --- | --- | --- | --- |
+| Horner 32 | 32768 | no | 0.55 ms | — | no dispatch; the CPU path runs |
+| Horner 32 | 65536 | yes | 0.91 ms | 0.54 ms | 1.68× faster |
+| Horner 40 | 32768 | no | 0.64 ms | — | no dispatch; the CPU path runs |
+| Horner 40 | 65536 | yes | 1.27 ms | 0.54 ms | 2.38× faster |
+
+At `n = 131072` this buffer is too small for the access range: the run-time bounds guard
+keeps the CPU path because the Wasm would trap while the GPU would not.
+
+The four Horner bodies are `corpus/synthetic/intensity/horner{16,24,32,40}.wat`.
+
 ## Compiling
 
 Rust 1.98 or newer.
@@ -75,6 +104,12 @@ Real inputs on the same machine, release build, median of six runs:
 | Basis transcoder | 490 KB | ≈0.35 s |
 
 On the Draco build the rewritten program dispatches nothing: one loop clears the gate, and the decode path does not enter it. [docs/BOUNDARIES.md](docs/BOUNDARIES.md) has the per-stage counts and how to read the refusal lines — `compile` prints one `skip` line per refusal, and `analyze --trace-jsonl` writes one event per obligation.
+
+`compile` ends with a one-line breakdown of why loops stayed on the CPU: how many contain
+calls or other side-effecting operators, how many failed legality split by obligation
+(control, memory, dependence, effects), how many fell below the cost gate, and how many
+could not be lowered. `--require-offload` turns "no kernel was produced" into a non-zero
+exit, for build scripts that require the GPU path.
 
 To inspect decisions without writing artifacts:
 
