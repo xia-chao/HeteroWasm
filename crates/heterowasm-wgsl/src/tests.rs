@@ -634,6 +634,8 @@ fn dispatch_boundaries_should_write_exactly_the_expected_words() -> TestResult {
             max_stride_bytes: 4,
             index_field: None,
             launch_count: None,
+            read_slots: Vec::new(),
+            write_slots: Vec::new(),
             results: Vec::new(),
         };
 
@@ -1573,6 +1575,8 @@ fn artifact_round_trip_through_disk_runs_and_matches_wasm() -> TestResult {
             max_stride_bytes: 4,
             index_field: None,
             launch_count: None,
+            read_slots: Vec::new(),
+            write_slots: Vec::new(),
             results: Vec::new(),
         };
         let compiled = context
