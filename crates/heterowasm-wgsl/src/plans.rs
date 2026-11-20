@@ -27,58 +27,77 @@ pub mod planning {
     >;
 
 
-    fn scan_operators(body: &waffle::FunctionBody, members: &HashSet<Block>) -> (bool, bool) {
-        let mut side_effects = false;
-        let mut has_store = false;
-        for value in body.values.iter() {
-            if !members.contains(&body.value_blocks[value]) {
-                continue;
+    fn is_side_effect(operator: &Operator) -> bool {
+        matches!(
+            operator,
+            Operator::Call { .. }
+                | Operator::CallIndirect { .. }
+                | Operator::MemoryCopy { .. }
+                | Operator::MemoryFill { .. }
+                | Operator::MemoryGrow { .. }
+                | Operator::GlobalSet { .. }
+                | Operator::TableSet { .. }
+                | Operator::TableGrow { .. }
+                | Operator::Unreachable
+        )
+    }
+
+
+    fn is_store(operator: &Operator) -> bool {
+        matches!(
+            operator,
+            Operator::I32Store { .. }
+                | Operator::I64Store { .. }
+                | Operator::I32Store8 { .. }
+                | Operator::I32Store16 { .. }
+                | Operator::I64Store8 { .. }
+                | Operator::I64Store16 { .. }
+                | Operator::I64Store32 { .. }
+        )
+    }
+
+
+    pub(crate) struct EffectFacts {
+        side_effects: Vec<bool>,
+        stores: Vec<bool>,
+    }
+
+    impl EffectFacts {
+        pub(crate) fn of(body: &waffle::FunctionBody) -> Self {
+            let mut side_effects = vec![false; body.blocks.len()];
+            let mut stores = vec![false; body.blocks.len()];
+            for value in body.values.iter() {
+                let Some(ValueDef::Operator(operator, _, _)) = body.values.get(value) else {
+                    continue;
+                };
+                let block = body.value_blocks[value].index();
+                side_effects[block] |= is_side_effect(operator);
+                stores[block] |= is_store(operator);
             }
-            let Some(ValueDef::Operator(operator, _, _)) = body.values.get(value) else {
-                continue;
-            };
-            if matches!(
-                operator,
-                Operator::Call { .. }
-                    | Operator::CallIndirect { .. }
-                    | Operator::MemoryCopy { .. }
-                    | Operator::MemoryFill { .. }
-                    | Operator::MemoryGrow { .. }
-                    | Operator::GlobalSet { .. }
-                    | Operator::TableSet { .. }
-                    | Operator::TableGrow { .. }
-                    | Operator::Unreachable
-            ) {
-                side_effects = true;
-            }
-            if matches!(
-                operator,
-                Operator::I32Store { .. }
-                    | Operator::I64Store { .. }
-                    | Operator::I32Store8 { .. }
-                    | Operator::I32Store16 { .. }
-                    | Operator::I64Store8 { .. }
-                    | Operator::I64Store16 { .. }
-                    | Operator::I64Store32 { .. }
-            ) {
-                has_store = true;
+            Self {
+                side_effects,
+                stores,
             }
         }
-        (side_effects, has_store)
-    }
+
+        pub(crate) fn has_side_effects(&self, members: &HashSet<Block>) -> bool {
+            members.iter().any(|block| self.side_effects[block.index()])
+        }
 
 
-    pub(crate) fn has_side_effects(body: &waffle::FunctionBody, members: &HashSet<Block>) -> bool {
-        scan_operators(body, members).0
-    }
-
-
-    pub(crate) fn cheaply_unrewardable(
-        body: &waffle::FunctionBody,
-        members: &HashSet<Block>,
-    ) -> bool {
-        let (side_effects, has_store) = scan_operators(body, members);
-        side_effects || !has_store
+        pub(crate) fn cheaply_unrewardable(&self, members: &HashSet<Block>) -> bool {
+            let mut side_effects = false;
+            let mut has_store = false;
+            for block in members {
+                let index = block.index();
+                side_effects |= self.side_effects[index];
+                has_store |= self.stores[index];
+                if side_effects {
+                    return true;
+                }
+            }
+            side_effects || !has_store
+        }
     }
 
 
@@ -241,9 +260,11 @@ pub mod planning {
             let Some(body) = module.funcs[func].body() else {
                 continue;
             };
+
+            let effects = EffectFacts::of(body);
             for natural_loop in ControlFlow::analyze(body, trace).natural_loops(body, trace) {
                 let members: HashSet<Block> = natural_loop.blocks.iter().copied().collect();
-                if has_side_effects(body, &members) {
+                if effects.has_side_effects(&members) {
 
                     set.skipped_legality += 1;
                     set.skipped_side_effects += 1;
@@ -440,5 +461,5 @@ pub mod planning {
     }
 }
 
-pub(crate) use planning::cheaply_unrewardable;
+pub(crate) use planning::EffectFacts;
 pub use planning::{plan_gpu_loops, rewrite_with_plans, LoopPlanSet, OffloadPlan};

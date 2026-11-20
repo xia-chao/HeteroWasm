@@ -154,11 +154,12 @@ pub fn plan_gpu_arity(module: &Module<'_>, trace: &Trace) -> Result<DispatchShap
         let Some(body) = module.funcs[func].body() else {
             continue;
         };
+        let effects = crate::plans::EffectFacts::of(body);
         for natural_loop in ControlFlow::analyze(body, trace).natural_loops(body, trace) {
 
             let members: std::collections::HashSet<Block> =
                 natural_loop.blocks.iter().copied().collect();
-            if crate::plans::cheaply_unrewardable(body, &members) {
+            if effects.cheaply_unrewardable(&members) {
                 continue;
             }
             let evolution = ScalarEvolution::analyze(body, &natural_loop, trace);
