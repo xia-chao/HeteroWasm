@@ -20,14 +20,28 @@ pub(crate) fn plan_first_gpu_loop(
         let Some(body) = module.funcs[func].body() else {
             continue;
         };
+        let memory = AddressRecovery::memory_access_values(body);
+        let legality_effects = heterowasm_legality::effects::EffectScan::scan(body);
         for natural_loop in ControlFlow::analyze(body, trace).natural_loops(body, trace) {
             let evolution = ScalarEvolution::analyze(body, &natural_loop, trace);
-            let recovery =
-                AddressRecovery::analyze_loop(body, &evolution, &natural_loop.blocks, trace);
+            let recovery = AddressRecovery::analyze_loop_indexed(
+                body,
+                &evolution,
+                &natural_loop.blocks,
+                trace,
+                &memory,
+            );
             let accesses: Vec<_> = recovery.accesses().to_vec();
             let extent = LoopExtent::analyze(body, &natural_loop, &evolution);
-            let legality =
-                LoopLegal::judge(body, &natural_loop, &accesses, &evolution, module, trace);
+            let legality = LoopLegal::judge_with_cache(
+                body,
+                &natural_loop,
+                &accesses,
+                &evolution,
+                module,
+                trace,
+                &legality_effects,
+            );
             if !matches!(
                 legality.disposition(),
                 Disposition::Gpu | Disposition::GpuAfterGuard
@@ -155,6 +169,7 @@ pub fn plan_gpu_arity(module: &Module<'_>, trace: &Trace) -> Result<DispatchShap
             continue;
         };
         let effects = crate::plans::EffectFacts::of(body);
+        let memory = AddressRecovery::memory_access_values(body);
         for natural_loop in ControlFlow::analyze(body, trace).natural_loops(body, trace) {
 
             let members: std::collections::HashSet<Block> =
@@ -163,8 +178,13 @@ pub fn plan_gpu_arity(module: &Module<'_>, trace: &Trace) -> Result<DispatchShap
                 continue;
             }
             let evolution = ScalarEvolution::analyze(body, &natural_loop, trace);
-            let recovery =
-                AddressRecovery::analyze_loop(body, &evolution, &natural_loop.blocks, trace);
+            let recovery = AddressRecovery::analyze_loop_indexed(
+                body,
+                &evolution,
+                &natural_loop.blocks,
+                trace,
+                &memory,
+            );
             let accesses: Vec<_> = recovery.accesses().to_vec();
             let extent = LoopExtent::analyze(body, &natural_loop, &evolution);
             if let Ok(kernel) = lower(

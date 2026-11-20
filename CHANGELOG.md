@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Address recovery and the effects proof obligation no longer rescan the whole function body
+  per loop: both now build a per-function candidate index (memory-access values and
+  side-effecting operators respectively) and walk only loop members. Compile time: Draco decoder
+  0.120s to 0.107s, Basis transcoder 0.0756s to 0.0535s (29% faster), mappings 0.021s to
+  0.016s. Artifacts and stdout are byte-identical on all corpus inputs.
 - Planning caches each function's side-effect and store facts once (per block) instead of
   re-scanning every value of the function for every loop. Compile time: Draco decoder
   0.141s to 0.116s (18% faster), Basis transcoder 0.100s to 0.078s (22% faster), mappings
