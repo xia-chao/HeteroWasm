@@ -48,7 +48,7 @@ pub(crate) fn compile(
     let fused = if fusion_only.is_empty() {
         None
     } else {
-        emit_fused(&module, output, &trace, Some(&fusion_only))?
+        emit_fused(&module, output, &trace, &plan_set)?
     };
 
     let fused_rewrite = fused.is_some();
@@ -214,10 +214,12 @@ fn emit_fused(
     module: &Module<'_>,
     output: &Path,
     trace: &Trace,
-    only: Option<&HashSet<Func>>,
+    plan_set: &LoopPlanSet,
 ) -> Result<Option<String>, CliError> {
 
-    match heterowasm_wgsl::plan_gpu_fusion(module, trace, only) {
+
+    let only = Some(&plan_set.fusion_candidates);
+    match heterowasm_wgsl::plan_gpu_fusion_from(module, trace, only, &plan_set.fusion_inputs) {
         Ok(Some(plan)) => {
             let body = module.funcs[plan.func].body().ok_or_else(|| {
                 CliError::Message("fusion target is not a function body".to_string())
@@ -293,15 +295,17 @@ fn rewrite_and_write(
     plan_set: &LoopPlanSet,
 ) -> Result<Vec<(usize, usize)>, CliError> {
     let outcome = if fused {
-        heterowasm_wgsl::rewrite_module_fused(module, trace).map(|outcome| {
-            println!(
-                "rewrite via fusion path: extracted {} loops, fused = {}",
-                outcome.loops_removed, outcome.fused
-            );
-            (0..outcome.loops_removed)
-                .map(|index| (0_usize, index))
-                .collect()
-        })
+        heterowasm_wgsl::rewrite_module_fused_from(module, trace, &plan_set.fusion_inputs).map(
+            |outcome| {
+                println!(
+                    "rewrite via fusion path: extracted {} loops, fused = {}",
+                    outcome.loops_removed, outcome.fused
+                );
+                (0..outcome.loops_removed)
+                    .map(|index| (0_usize, index))
+                    .collect()
+            },
+        )
     } else {
         heterowasm_wgsl::rewrite_with_plans(module, &plan_set.rewritable, trace)
     };

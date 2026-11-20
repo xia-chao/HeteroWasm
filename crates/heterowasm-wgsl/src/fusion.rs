@@ -18,7 +18,7 @@ pub(crate) type RegionUses = BTreeMap<String, Vec<(usize, bool)>>;
 
 pub(crate) type Collected = (NaturalLoop, Option<LoopExtent>, RegionUses);
 
-fn region_key(body: &FunctionBody, address: &NormalizedAddress) -> String {
+pub(crate) fn region_key(body: &FunctionBody, address: &NormalizedAddress) -> String {
     let terms: Vec<String> = address
         .base
         .iter()
@@ -207,8 +207,9 @@ pub fn plan_gpu_fusion(
     trace: &Trace,
     only: Option<&HashSet<Func>>,
 ) -> Result<Option<GpuFusionPlan>, String> {
-    for func in module.funcs.iter() {
 
+    let mut input = from_plans::FusionInput::default();
+    for func in module.funcs.iter() {
         if let Some(only) = only {
             if !only.contains(&func) {
                 continue;
@@ -217,40 +218,87 @@ pub fn plan_gpu_fusion(
         let Some(body) = module.funcs[func].body() else {
             continue;
         };
-        let collected = collect_region_uses(body, trace);
-        let Some((region, producer_index, consumer_index)) =
-            fusable_pairs(body, &collected).into_iter().next()
-        else {
-            continue;
-        };
-
-        let lower_one = |index: usize| -> Result<Kernel, String> {
-            let (natural_loop, _, _) = &collected[index];
-            let evolution = ScalarEvolution::analyze(body, natural_loop, trace);
-            let recovery =
-                AddressRecovery::analyze_loop(body, &evolution, &natural_loop.blocks, trace);
-            let accesses: Vec<_> = recovery.accesses().to_vec();
-            let extent = LoopExtent::analyze(body, natural_loop, &evolution);
-            lower(body, natural_loop, &accesses, &evolution, extent, 64, trace)
-                .map_err(|error| error.to_string())
-        };
-        let producer = lower_one(producer_index)?;
-        let consumer = lower_one(consumer_index)?;
-        let plan = fuse_two_chain(&producer, &consumer, producer.fields.len(), &region)?;
-        trace
-            .info(Stage::Wgsl, "gpu fusion planned")
-            .subject("gpu_fusion")
-            .field("removed_intermediate", plan.removed_intermediate.clone())
-            .field("producer_fields", producer.fields.len())
-            .field("consumer_fields", consumer.fields.len())
-            .emit();
-        return Ok(Some(GpuFusionPlan {
-            kernel: plan.fused,
-            func,
-        }));
+        input.by_func.insert(func, collect_region_uses(body, trace));
     }
-    Ok(None)
+    from_plans::plan(module, trace, only, &input)
 }
+
+
+pub mod from_plans {
+    use super::*;
+
+
+    #[derive(Default)]
+    pub struct FusionInput {
+        pub(crate) by_func: BTreeMap<Func, Vec<Collected>>,
+    }
+
+    impl FusionInput {
+
+        pub(crate) fn loops_of(&self, func: Func) -> Option<&[Collected]> {
+            self.by_func.get(&func).map(Vec::as_slice)
+        }
+    }
+
+
+    pub fn plan(
+        module: &Module<'_>,
+        trace: &Trace,
+        only: Option<&HashSet<Func>>,
+        input: &FusionInput,
+    ) -> Result<Option<GpuFusionPlan>, String> {
+        for func in module.funcs.iter() {
+
+            if let Some(only) = only {
+                if !only.contains(&func) {
+                    continue;
+                }
+            }
+            let Some(body) = module.funcs[func].body() else {
+                continue;
+            };
+            let Some(collected) = input.loops_of(func) else {
+                continue;
+            };
+            if collected.is_empty() {
+                continue;
+            }
+            let Some((region, producer_index, consumer_index)) =
+                fusable_pairs(body, collected).into_iter().next()
+            else {
+                continue;
+            };
+
+            let lower_one = |index: usize| -> Result<Kernel, String> {
+                let (natural_loop, _, _) = &collected[index];
+                let evolution = ScalarEvolution::analyze(body, natural_loop, trace);
+                let recovery =
+                    AddressRecovery::analyze_loop(body, &evolution, &natural_loop.blocks, trace);
+                let accesses: Vec<_> = recovery.accesses().to_vec();
+                let extent = LoopExtent::analyze(body, natural_loop, &evolution);
+                lower(body, natural_loop, &accesses, &evolution, extent, 64, trace)
+                    .map_err(|error| error.to_string())
+            };
+            let producer = lower_one(producer_index)?;
+            let consumer = lower_one(consumer_index)?;
+            let plan = fuse_two_chain(&producer, &consumer, producer.fields.len(), &region)?;
+            trace
+                .info(Stage::Wgsl, "gpu fusion planned")
+                .subject("gpu_fusion")
+                .field("removed_intermediate", plan.removed_intermediate.clone())
+                .field("producer_fields", producer.fields.len())
+                .field("consumer_fields", consumer.fields.len())
+                .emit();
+            return Ok(Some(GpuFusionPlan {
+                kernel: plan.fused,
+                func,
+            }));
+        }
+        Ok(None)
+    }
+}
+
+pub use from_plans::{plan as plan_gpu_fusion_from, FusionInput};
 
 pub(crate) struct FusionPlan {
     pub(crate) fused: Kernel,

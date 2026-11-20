@@ -16,8 +16,8 @@ pub mod types;
 
 pub use dispatch::decide_dispatch;
 pub use error::LowerError;
-pub use fused::rewrite_module_fused;
-pub use fusion::plan_gpu_fusion;
+pub use fused::{rewrite_module_fused, rewrite_module_fused_from};
+pub use fusion::{plan_gpu_fusion, plan_gpu_fusion_from, FusionInput};
 pub use inject::inject_dispatch_import;
 pub use lower::lower;
 pub use manifest::artifact;
