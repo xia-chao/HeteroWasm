@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A binary input is parsed directly instead of being disassembled to WAT and parsed back;
+  this also makes `original.wasm` byte-identical to a binary input. Text (`.wat`) inputs
+  are unchanged.
 - `compile` prints a breakdown of why loops stayed on the CPU: side-effecting operators,
   legality split by obligation, the cost gate, lowering, and loops without an exit.
 - `compile --require-offload` exits non-zero when no loop was emitted.
