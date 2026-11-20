@@ -3618,6 +3618,12 @@ fn fused_rewrite_matches_original_program_inner() -> TestResult {
     assert_eq!(kernels.len(), 2, "chain2 should emit two kernels");
     let plan = fuse_two_chain(&kernels[0], &kernels[1], kernels[0].fields.len(), "X")?;
 
+
+    let plans = crate::plans::plan_gpu_loops(&module, &trace);
+    assert!(plans.fits_module(&module, &trace));
+    let misplaced = module.funcs.len();
+    assert!(!plans.shifted(misplaced).fits_module(&module, &trace));
+
     let outcome = rewrite_module_fused(&mut module, &trace)?;
     println!(
         "\nrewrite: extracted {} loops, fused = {}",

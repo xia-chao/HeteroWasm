@@ -6,6 +6,7 @@ use heterowasm_bounds::LoopExtent;
 use heterowasm_cfg::{ControlFlow, NaturalLoop};
 use heterowasm_scev::{canonical_value, ScalarEvolution};
 use heterowasm_trace::{Stage, Trace};
+use waffle::entity::EntityRef;
 use waffle::{Block, Func, FunctionBody, Module, Terminator, Value};
 
 use crate::conformance;
@@ -237,6 +238,18 @@ pub mod from_plans {
 
         pub(crate) fn loops_of(&self, func: Func) -> Option<&[Collected]> {
             self.by_func.get(&func).map(Vec::as_slice)
+        }
+
+
+        pub(crate) fn into_shifted(self, shift: usize) -> FusionInput {
+            if shift == 0 {
+                return self;
+            }
+            let mut by_func = BTreeMap::new();
+            for (func, loops) in self.by_func {
+                by_func.insert(Func::new(func.index() + shift), loops);
+            }
+            FusionInput { by_func }
         }
     }
 
