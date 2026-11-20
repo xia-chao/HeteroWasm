@@ -10,7 +10,7 @@ use waffle::{FunctionBody, Module};
 use crate::combine::combine;
 use crate::control::control_obligation;
 use crate::dependence::dependence_obligation;
-use crate::effects::effects_obligation;
+use crate::effects::EffectScan;
 use crate::memory::memory_obligation;
 use crate::types::{verdict_name, GuardKind, LoopLegal};
 
@@ -23,6 +23,28 @@ impl LoopLegal {
         evolution: &ScalarEvolution,
         module: &Module<'_>,
         trace: &Trace,
+    ) -> Self {
+        let scan = EffectScan::scan(body);
+        Self::judge_with_cache(
+            body,
+            natural_loop,
+            accesses,
+            evolution,
+            module,
+            trace,
+            &scan,
+        )
+    }
+
+
+    pub fn judge_with_cache(
+        body: &FunctionBody,
+        natural_loop: &NaturalLoop,
+        accesses: &[MemoryAccess],
+        evolution: &ScalarEvolution,
+        module: &Module<'_>,
+        trace: &Trace,
+        effects: &EffectScan,
     ) -> Self {
         let subject = format!("loop@{}", natural_loop.header.index());
         let _scope = trace.stage(Stage::Legality, subject.as_str());
@@ -38,7 +60,7 @@ impl LoopLegal {
             control_obligation(body, natural_loop, evolution),
             memory_obligation(accesses, bounds.proven()),
             dependence_obligation(dependence, evolution),
-            effects_obligation(body, natural_loop),
+            effects.obligation(body, natural_loop),
         ];
 
         let mut guards = Vec::new();

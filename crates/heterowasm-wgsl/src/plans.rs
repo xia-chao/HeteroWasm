@@ -3,6 +3,7 @@ pub mod planning {
     use heterowasm_bounds::LoopExtent;
     use heterowasm_cfg::ControlFlow;
     use heterowasm_ir::Verdict;
+    use heterowasm_legality::effects::EffectScan;
     use heterowasm_legality::{Disposition, LoopLegal, Obligation, ObligationKind};
     use heterowasm_scev::ScalarEvolution;
     use heterowasm_trace::Trace;
@@ -262,6 +263,8 @@ pub mod planning {
             };
 
             let effects = EffectFacts::of(body);
+            let memory = AddressRecovery::memory_access_values(body);
+            let legality_effects = EffectScan::scan(body);
             for natural_loop in ControlFlow::analyze(body, trace).natural_loops(body, trace) {
                 let members: HashSet<Block> = natural_loop.blocks.iter().copied().collect();
                 if effects.has_side_effects(&members) {
@@ -271,8 +274,13 @@ pub mod planning {
                     continue;
                 }
                 let evolution = ScalarEvolution::analyze(body, &natural_loop, trace);
-                let recovery =
-                    AddressRecovery::analyze_loop(body, &evolution, &natural_loop.blocks, trace);
+                let recovery = AddressRecovery::analyze_loop_indexed(
+                    body,
+                    &evolution,
+                    &natural_loop.blocks,
+                    trace,
+                    &memory,
+                );
                 let accesses: Vec<_> = recovery.accesses().to_vec();
                 let extent = LoopExtent::analyze(body, &natural_loop, &evolution);
 
@@ -289,8 +297,15 @@ pub mod planning {
                     extent,
                     normalized,
                 ));
-                let legality =
-                    LoopLegal::judge(body, &natural_loop, &accesses, &evolution, module, trace);
+                let legality = LoopLegal::judge_with_cache(
+                    body,
+                    &natural_loop,
+                    &accesses,
+                    &evolution,
+                    module,
+                    trace,
+                    &legality_effects,
+                );
                 if !matches!(
                     legality.disposition(),
                     Disposition::Gpu | Disposition::GpuAfterGuard

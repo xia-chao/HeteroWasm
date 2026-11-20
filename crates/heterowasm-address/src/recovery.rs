@@ -17,7 +17,7 @@ pub struct AddressRecovery {
 impl AddressRecovery {
 
     pub fn analyze(body: &FunctionBody, evolution: &ScalarEvolution, trace: &Trace) -> Self {
-        Self::analyze_in(body, evolution, trace, None)
+        Self::analyze_in(body, evolution, trace, None, None)
     }
 
 
@@ -27,7 +27,32 @@ impl AddressRecovery {
         blocks: &[Block],
         trace: &Trace,
     ) -> Self {
-        Self::analyze_in(body, evolution, trace, Some(blocks))
+        Self::analyze_in(body, evolution, trace, Some(blocks), None)
+    }
+
+
+    pub fn analyze_loop_indexed(
+        body: &FunctionBody,
+        evolution: &ScalarEvolution,
+        blocks: &[Block],
+        trace: &Trace,
+        candidates: &[waffle::Value],
+    ) -> Self {
+        Self::analyze_in(body, evolution, trace, Some(blocks), Some(candidates))
+    }
+
+
+    pub fn memory_access_values(body: &FunctionBody) -> Vec<waffle::Value> {
+        let mut values = Vec::new();
+        for value in body.values.iter() {
+            let Some(ValueDef::Operator(operator, _, _)) = body.values.get(value) else {
+                continue;
+            };
+            if memory_shape(operator).is_some() {
+                values.push(value);
+            }
+        }
+        values
     }
 
     fn analyze_in(
@@ -35,44 +60,34 @@ impl AddressRecovery {
         evolution: &ScalarEvolution,
         trace: &Trace,
         blocks: Option<&[Block]>,
+        candidates: Option<&[Value]>,
     ) -> Self {
         let _scope = trace.stage(Stage::AddressRecovery, "function");
         let mut accesses = Vec::new();
 
         let members: Option<HashSet<Block>> = blocks.map(|blocks| blocks.iter().copied().collect());
 
-        for value in body.values.iter() {
-            if let Some(members) = &members {
-                if !members.contains(&body.value_blocks[value]) {
-                    continue;
+        match candidates {
+            Some(candidates) => {
+                for &value in candidates {
+                    if let Some(members) = &members {
+                        if !members.contains(&body.value_blocks[value]) {
+                            continue;
+                        }
+                    }
+                    Self::record(body, evolution, value, &mut accesses);
                 }
             }
-            let Some(ValueDef::Operator(operator, args, _)) = body.values.get(value) else {
-                continue;
-            };
-            let Some((kind, bytes, memory)) = memory_shape(operator) else {
-                continue;
-            };
-            let operands: &[Value] = &body.arg_pool[*args];
-            let Some(&address) = operands.first() else {
-                continue;
-            };
-
-            let conclusion = match AddressRecovery::form_of(body, evolution, address) {
-                Some(form) => AddressConclusion::Affine(form),
-                None => AddressConclusion::Unknown {
-                    reason: ADDRESS_NOT_AFFINE,
-                },
-            };
-
-            accesses.push(MemoryAccess {
-                value,
-                block: body.value_blocks[value],
-                kind,
-                bytes,
-                instruction_offset: i64::from(memory.offset),
-                conclusion,
-            });
+            None => {
+                for value in body.values.iter() {
+                    if let Some(members) = &members {
+                        if !members.contains(&body.value_blocks[value]) {
+                            continue;
+                        }
+                    }
+                    Self::record(body, evolution, value, &mut accesses);
+                }
+            }
         }
 
         let affine = accesses.iter().filter(|access| access.is_affine()).count();
@@ -98,6 +113,41 @@ impl AddressRecovery {
         }
 
         Self { accesses }
+    }
+
+
+    fn record(
+        body: &FunctionBody,
+        evolution: &ScalarEvolution,
+        value: Value,
+        accesses: &mut Vec<MemoryAccess>,
+    ) {
+        let Some(ValueDef::Operator(operator, args, _)) = body.values.get(value) else {
+            return;
+        };
+        let Some((kind, bytes, memory)) = memory_shape(operator) else {
+            return;
+        };
+        let operands: &[Value] = &body.arg_pool[*args];
+        let Some(&address) = operands.first() else {
+            return;
+        };
+
+        let conclusion = match AddressRecovery::form_of(body, evolution, address) {
+            Some(form) => AddressConclusion::Affine(form),
+            None => AddressConclusion::Unknown {
+                reason: ADDRESS_NOT_AFFINE,
+            },
+        };
+
+        accesses.push(MemoryAccess {
+            value,
+            block: body.value_blocks[value],
+            kind,
+            bytes,
+            instruction_offset: i64::from(memory.offset),
+            conclusion,
+        });
     }
 
 
