@@ -1,19 +1,30 @@
 pub mod planning {
-    use heterowasm_address::AddressRecovery;
+    use heterowasm_address::{AccessKind, AddressRecovery, NormalizedAddress};
     use heterowasm_bounds::LoopExtent;
     use heterowasm_cfg::ControlFlow;
     use heterowasm_ir::Verdict;
     use heterowasm_legality::{Disposition, LoopLegal, Obligation, ObligationKind};
     use heterowasm_scev::ScalarEvolution;
     use heterowasm_trace::Trace;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{BTreeMap, HashMap, HashSet};
 
     use waffle::entity::EntityRef;
     use waffle::{Block, Func, FuncDecl, Module, Operator, ValueDef};
 
+    use crate::fusion::{from_plans::FusionInput, region_key, Collected, RegionUses};
     use crate::lower::lower;
     use crate::single::{loop_exit, offload_loop};
     use crate::types::{Dispatch, Kernel, LoopRegion};
+
+
+    type FusionSeeds = HashMap<
+        Func,
+        Vec<(
+            heterowasm_cfg::NaturalLoop,
+            Option<LoopExtent>,
+            Vec<(NormalizedAddress, AccessKind)>,
+        )>,
+    >;
 
 
     fn scan_operators(body: &waffle::FunctionBody, members: &HashSet<Block>) -> (bool, bool) {
@@ -97,6 +108,8 @@ pub mod planning {
         pub lower_failures: Vec<(String, String)>,
 
         pub fusion_candidates: HashSet<Func>,
+
+        pub fusion_inputs: FusionInput,
     }
 
 
@@ -140,8 +153,11 @@ pub mod planning {
             skipped_side_effects: 0,
             lower_failures: Vec::new(),
             fusion_candidates: HashSet::new(),
+            fusion_inputs: FusionInput::default(),
         };
         let mut lowerable_by_func: HashMap<Func, usize> = HashMap::new();
+
+        let mut fusion_seeds: FusionSeeds = HashMap::new();
         for func in module.funcs.iter() {
             let Some(body) = module.funcs[func].body() else {
                 continue;
@@ -159,6 +175,20 @@ pub mod planning {
                     AddressRecovery::analyze_loop(body, &evolution, &natural_loop.blocks, trace);
                 let accesses: Vec<_> = recovery.accesses().to_vec();
                 let extent = LoopExtent::analyze(body, &natural_loop, &evolution);
+
+                let normalized: Vec<(NormalizedAddress, AccessKind)> = accesses
+                    .iter()
+                    .filter_map(|access| {
+                        access
+                            .normalized(&evolution)
+                            .map(|address| (address, access.kind))
+                    })
+                    .collect();
+                fusion_seeds.entry(func).or_default().push((
+                    natural_loop.clone(),
+                    extent,
+                    normalized,
+                ));
                 let legality =
                     LoopLegal::judge(body, &natural_loop, &accesses, &evolution, module, trace);
                 if !matches!(
@@ -219,6 +249,27 @@ pub mod planning {
             .filter(|(_, count)| *count >= 2)
             .map(|(func, _)| func)
             .collect();
+
+        let candidates: Vec<Func> = set.fusion_candidates.iter().copied().collect();
+        for func in candidates {
+            let Some(seeds) = fusion_seeds.remove(&func) else {
+                continue;
+            };
+            let Some(body) = module.funcs[func].body() else {
+                continue;
+            };
+            let mut collected: Vec<Collected> = Vec::with_capacity(seeds.len());
+            for (index, (natural_loop, extent, normalized)) in seeds.into_iter().enumerate() {
+                let mut uses: RegionUses = BTreeMap::new();
+                for (address, kind) in normalized {
+                    uses.entry(region_key(body, &address))
+                        .or_default()
+                        .push((index, kind == AccessKind::Store));
+                }
+                collected.push((natural_loop, extent, uses));
+            }
+            set.fusion_inputs.by_func.insert(func, collected);
+        }
         for plan in &set.eligible {
             let overlaps = set.rewritable.iter().any(|existing: &OffloadPlan| {
                 existing.func == plan.func
