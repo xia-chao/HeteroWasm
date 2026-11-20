@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `compile` normalizes once and expands only the functions it will rewrite, so a second full
+  expansion is gone and `rewritten.wasm` no longer re-encodes every function body: the Draco
+  decoder's rewritten module drops from 754080 to 458907 bytes. Compile time: Draco 0.199s to
+  0.137s, Basis 0.149s to 0.097s.
 - A binary input is parsed directly instead of being disassembled to WAT and parsed back;
   this also makes `original.wasm` byte-identical to a binary input. Text (`.wat`) inputs
   are unchanged.
