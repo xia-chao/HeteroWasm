@@ -33,10 +33,8 @@ pub(crate) fn compile(
     std::fs::write(output.join("original.wasm"), &prepared.original)
         .map_err(|source| CliError::WriteRewritten { source })?;
 
-    let normalized = normalize_bulk_memory(&prepared.bytes, &trace);
     let mut module =
-        load_module(&normalized, &trace).map_err(|err| CliError::Message(err.to_string()))?;
-    expand_all_bodies(&mut module, &trace).map_err(|err| CliError::Message(err.to_string()))?;
+        load_module(&prepared.bytes, &trace).map_err(|err| CliError::Message(err.to_string()))?;
     std::fs::create_dir_all(output).map_err(|source| CliError::CreateDir {
         path: output.to_path_buf(),
         source,
@@ -44,41 +42,51 @@ pub(crate) fn compile(
 
 
     let shift = usize::from(prepared.injected_from_wat);
-    let shape_matches = prepared.probe_funcs + shift == module.funcs.len()
-        && prepared
-            .probe_shape
-            .iter()
-            .enumerate()
-            .all(|(index, shape)| {
-                let body = module
-                    .funcs
-                    .get(Func::new(index + shift))
-                    .and_then(FuncDecl::body);
-                match shape {
-                    Some((blocks, values)) => body.is_some_and(|body| {
-                        body.blocks.len() == *blocks && body.values.len() == *values
-                    }),
-                    None => body.is_none(),
-                }
-            });
-    let plan_set = match prepared.plans {
-        Some(plans) => {
+    let mut reused = None;
+    if prepared.probe_funcs + shift == module.funcs.len() {
+        if let Some(plans) = prepared.plans {
+            let needed: Vec<Func> = plans
+                .analysis_funcs()
+                .into_iter()
+                .map(|func| Func::new(func.index() + shift))
+                .collect();
+            let expanded = needed.iter().all(|func| module.expand_func(*func).is_ok());
+            let shapes_match = expanded
+                && needed.iter().all(|func| {
+                    let probe_index = func.index().saturating_sub(shift);
+                    let Some(Some((blocks, values))) =
+                        prepared.probe_shape.get(probe_index).copied()
+                    else {
+                        return false;
+                    };
+                    module
+                        .funcs
+                        .get(*func)
+                        .and_then(FuncDecl::body)
+                        .is_some_and(|body| {
+                            body.blocks.len() == blocks && body.values.len() == values
+                        })
+                });
             let shifted = plans.shifted(shift);
-            if shape_matches && shifted.fits_module(&module, &trace) {
-                shifted
-            } else {
-                trace
-                    .info(
-                        Stage::Runtime,
-                        "plan reuse rejected; re-planning on the loaded module",
-                    )
-                    .field("function_shift", shift)
-                    .field("shape_matches", shape_matches)
-                    .emit();
-                heterowasm_wgsl::plan_gpu_loops(&module, &trace)
+            if shapes_match && shifted.fits_module(&module, &trace) {
+                reused = Some(shifted);
             }
         }
-        None => heterowasm_wgsl::plan_gpu_loops(&module, &trace),
+    }
+    let plan_set = match reused {
+        Some(plans) => plans,
+        None => {
+            trace
+                .info(
+                    Stage::Runtime,
+                    "plan reuse rejected; re-planning on the loaded module",
+                )
+                .field("function_shift", shift)
+                .emit();
+            expand_all_bodies(&mut module, &trace)
+                .map_err(|err| CliError::Message(err.to_string()))?;
+            heterowasm_wgsl::plan_gpu_loops(&module, &trace)
+        }
     };
     let fusion_only: HashSet<Func> = plan_set.fusion_candidates.clone();
     let fused = if fusion_only.is_empty() {
@@ -200,7 +208,7 @@ fn prepare_input(raw: &[u8], trace: &Trace) -> Result<Prepared, CliError> {
         None => raw.to_vec(),
     };
 
-    let normalized = normalize_bulk_memory(&probe_bytes, trace);
+    let normalized = normalize_bulk_memory(&probe_bytes, trace).into_owned();
     let mut probe =
         load_module(&normalized, trace).map_err(|err| CliError::Message(err.to_string()))?;
     expand_all_bodies(&mut probe, trace).map_err(|err| CliError::Message(err.to_string()))?;
@@ -240,7 +248,7 @@ fn prepare_input(raw: &[u8], trace: &Trace) -> Result<Prepared, CliError> {
 
         Ok(shape) => {
             let bytes = heterowasm_wgsl::inject_dispatch_import(
-                &probe_bytes,
+                &normalized,
                 shape.fields,
                 shape.results,
                 trace,
@@ -258,8 +266,8 @@ fn prepare_input(raw: &[u8], trace: &Trace) -> Result<Prepared, CliError> {
         Err(reason) => {
             println!("no extractable loop; compile as-is (no rewrite artifact): {reason}");
             Ok(Prepared {
-                original: probe_bytes.clone(),
-                bytes: probe_bytes,
+                original: probe_bytes,
+                bytes: normalized,
                 injected_from_wat: false,
                 plans: Some(plans),
                 probe_shape,
