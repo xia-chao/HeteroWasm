@@ -2,6 +2,13 @@ use crate::error::RuntimeError;
 use crate::types::{DispatchSpec, Shader};
 
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AccessDirection {
+    Upload,
+    Readback,
+}
+
+
 pub(crate) struct Span {
     slot: usize,
     start: u64,
@@ -357,13 +364,30 @@ impl Span {
     }
 
 
+    fn keeps(shader: &Shader<'_>, slot: usize, direction: AccessDirection) -> bool {
+        let read = shader.read_slots.contains(&slot);
+        let write = shader.write_slots.contains(&slot);
+        if !read && !write {
+            return true;
+        }
+        match direction {
+            AccessDirection::Upload => read,
+            AccessDirection::Readback => write,
+        }
+    }
+
+
     pub(crate) fn pieces(
         shader: &Shader<'_>,
         params: &[u32],
         size: u64,
+        direction: AccessDirection,
     ) -> Option<Vec<(u64, u64)>> {
         let trip = trip_count(shader, params)?;
-        let found = spans(shader, params, trip);
+        let found: Vec<Span> = spans(shader, params, trip)
+            .into_iter()
+            .filter(|span| Self::keeps(shader, span.slot, direction))
+            .collect();
         if found.is_empty() {
             let (lo, hi) = touched_range(shader, params, size)?;
             return Some(vec![(lo, hi)]);

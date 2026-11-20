@@ -48,6 +48,18 @@ pub fn artifact<'a>(kernel: &'a Kernel, body: &FunctionBody) -> Result<Artifact<
         ),
     };
     let uniform_size = (kernel.fields.len() * 4).max(16);
+    let read_slots = kernel
+        .read_slots
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let write_slots = kernel
+        .write_slots
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
     let manifest = format!(
         "{{\n  \"schema\": \"heterowasm.kernel.v1\",\n  \"wgsl\": \"kernel.wgsl\",\n  \
          \"workgroup_size\": {},\n  \"dispatch\": {dispatch},\n  \
@@ -58,7 +70,9 @@ pub fn artifact<'a>(kernel: &'a Kernel, body: &FunctionBody) -> Result<Artifact<
          \"launch_count\": {},\n  \
          \"storage_binding\": 0,\n  \"params_binding\": 1,\n  \
          \"result_slots\": {},\n  \"results_binding\": 2,\n  \
-         \"fields_resolved\": {},\n  \"fields\": [\n{fields}\n  ]\n}}\n",
+         \"fields_resolved\": {},\n  \
+         \"read_slots\": [{read_slots}],\n  \"write_slots\": [{write_slots}],\n  \
+         \"fields\": [\n{fields}\n  ]\n}}\n",
 
         kernel.workgroup_size,
         kernel.min_constant_bytes,

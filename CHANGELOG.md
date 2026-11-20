@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The kernel manifest now records which uniform slots are used as read and write bases, and the
+  runtime transfers only what each direction needs: uploads cover read ranges, readbacks cover
+  written ranges. Measured on the same artifacts with the old and new runtime alternating: the
+  horner32 kernel drops from 0.564ms to 0.445ms (-21%), horner40 0.449ms to 0.400ms (-11%),
+  poly64 0.482ms to 0.448ms (-7%). Manifests without the new fields keep the old conservative
+  behaviour, so existing artifacts are unaffected.
 - `compile` normalizes once and expands only the functions it will rewrite, so a second full
   expansion is gone and `rewritten.wasm` no longer re-encodes every function body: the Draco
   decoder's rewritten module drops from 754080 to 458907 bytes. Compile time: Draco 0.199s to

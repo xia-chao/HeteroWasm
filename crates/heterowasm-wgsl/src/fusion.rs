@@ -414,6 +414,21 @@ pub(crate) fn fuse_two_chain(
 
             max_constant_bytes: producer.max_constant_bytes.max(consumer.max_constant_bytes),
             max_stride_bytes: producer.max_stride_bytes.max(consumer.max_stride_bytes),
+
+            read_slots: {
+                let mut slots = producer.read_slots.clone();
+                slots.extend(consumer.read_slots.iter().copied());
+                slots.sort_unstable();
+                slots.dedup();
+                slots
+            },
+            write_slots: {
+                let mut slots = producer.write_slots.clone();
+                slots.extend(consumer.write_slots.iter().copied());
+                slots.sort_unstable();
+                slots.dedup();
+                slots
+            },
             index_field: consumer.index_field,
             launch_count: consumer.launch_count,
 
