@@ -58,6 +58,9 @@ pub struct Kernel {
 
     pub max_stride_bytes: i64,
 
+    pub read_slots: Vec<usize>,
+    pub write_slots: Vec<usize>,
+
     pub index_field: Option<usize>,
 
     pub launch_count: Option<u32>,

@@ -112,6 +112,8 @@ fn dispatch(
         max_stride_bytes,
         index_field,
         launch_count,
+        read_slots,
+        write_slots,
     ) = {
         let state = caller.data();
         let kernel = state
@@ -131,6 +133,8 @@ fn dispatch(
             kernel.max_stride_bytes,
             kernel.index_field,
             kernel.launch_count,
+            kernel.read_slots.clone(),
+            kernel.write_slots.clone(),
         )
     };
     let shader = Shader {
@@ -142,6 +146,8 @@ fn dispatch(
         max_stride_bytes,
         index_field,
         launch_count,
+        read_slots,
+        write_slots,
     };
 
 
@@ -156,7 +162,13 @@ fn dispatch(
 
     crate::dispatch::check(&shader, uniforms, memory_len as u64).map_err(wasmtime::Error::from)?;
 
-    let ranges = GpuContext::copy_ranges(&shader, uniforms, memory_len);
+
+    let ranges = GpuContext::copy_ranges(
+        &shader,
+        uniforms,
+        memory_len,
+        crate::dispatch::AccessDirection::Upload,
+    );
     let parts = read_memory(&memory, caller, &ranges)?;
 
     let trace = caller.data().trace.share();

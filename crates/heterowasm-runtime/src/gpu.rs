@@ -198,10 +198,11 @@ impl GpuContext {
         shader: &Shader<'_>,
         params: &[u32],
         limit: usize,
+        direction: crate::dispatch::AccessDirection,
     ) -> Vec<(usize, usize, usize, usize)> {
         let size = u64::try_from(limit).unwrap_or(0);
-        let mut raw =
-            crate::dispatch::Span::pieces(shader, params, size).unwrap_or_else(|| vec![(0, size)]);
+        let mut raw = crate::dispatch::Span::pieces(shader, params, size, direction)
+            .unwrap_or_else(|| vec![(0, size)]);
 
         if let Some((start, _)) = shader.dispatch.loaded_word(params) {
             let end = start.saturating_add(4);
@@ -296,9 +297,15 @@ impl GpuContext {
         trace: &Trace,
     ) -> Result<Vec<u32>, RuntimeError> {
         let limit = memory.len().min(workspace.size);
-        let merged = Self::copy_ranges(shader, params, limit);
-        let mut parts = Vec::with_capacity(merged.len());
-        for (_, _, copy_lo, copy_hi) in &merged {
+
+        let upload = Self::copy_ranges(
+            shader,
+            params,
+            limit,
+            crate::dispatch::AccessDirection::Upload,
+        );
+        let mut parts = Vec::with_capacity(upload.len());
+        for (_, _, copy_lo, copy_hi) in &upload {
             let Some(bytes) = memory.get(*copy_lo..*copy_hi) else {
                 return Err(RuntimeError::DispatchRefused {
                     reason: "copy range is outside linear memory".to_string(),
@@ -342,8 +349,20 @@ impl GpuContext {
         trace: &Trace,
     ) -> Result<DispatchReadback, RuntimeError> {
         let DispatchMemory { limit, parts } = memory;
-        let merged = Self::copy_ranges(shader, params, limit);
-        for (_, _, copy_lo, copy_hi) in &merged {
+
+        let upload_ranges = Self::copy_ranges(
+            shader,
+            params,
+            limit,
+            crate::dispatch::AccessDirection::Upload,
+        );
+        let readback_ranges = Self::copy_ranges(
+            shader,
+            params,
+            limit,
+            crate::dispatch::AccessDirection::Readback,
+        );
+        for (_, _, copy_lo, copy_hi) in &upload_ranges {
             let copy_lo_bytes = u64::try_from(*copy_lo).unwrap_or(0);
             let bytes = Self::part_bytes(parts, *copy_lo, *copy_hi)?;
             self.queue
@@ -472,7 +491,7 @@ impl GpuContext {
             pass.set_bind_group(0, &workspace.bind_group, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
-        for (_, _, copy_lo, copy_hi) in &merged {
+        for (_, _, copy_lo, copy_hi) in &readback_ranges {
             let copy_lo_bytes = u64::try_from(*copy_lo).unwrap_or(0);
             let copy_bytes = u64::try_from(copy_hi.saturating_sub(*copy_lo)).unwrap_or(0);
             if copy_bytes == 0 {
@@ -543,7 +562,7 @@ impl GpuContext {
 
 
         let mut regions = Vec::new();
-        for (lo, hi, copy_lo, copy_hi) in &merged {
+        for (lo, hi, copy_lo, copy_hi) in &readback_ranges {
             if hi <= lo {
                 continue;
             }
@@ -572,8 +591,15 @@ impl GpuContext {
             .field("dispatched", i64::from(dispatched))
             .field("buffer_bytes", workspace.size)
             .field(
-                "touched_bytes",
-                i64::try_from(merged.iter().fold(0_usize, |sum, piece| {
+                "upload_bytes",
+                i64::try_from(upload_ranges.iter().fold(0_usize, |sum, piece| {
+                    sum.saturating_add(piece.1.saturating_sub(piece.0))
+                }))
+                .unwrap_or(-1),
+            )
+            .field(
+                "readback_bytes",
+                i64::try_from(readback_ranges.iter().fold(0_usize, |sum, piece| {
                     sum.saturating_add(piece.1.saturating_sub(piece.0))
                 }))
                 .unwrap_or(-1),

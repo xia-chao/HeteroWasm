@@ -164,6 +164,8 @@ fn overlapping_ranges_must_be_refused() {
         max_stride_bytes: 4,
         index_field: None,
         launch_count: None,
+        read_slots: Vec::new(),
+        write_slots: Vec::new(),
     };
     let error = crate::dispatch::check(&shader, &[0, 8], 4096)
         .expect_err("partially overlapping ranges must be rejected");
@@ -171,6 +173,55 @@ fn overlapping_ranges_must_be_refused() {
     assert!(
         text.contains("overlap"),
         "reject reason must mention overlap: {text}"
+    );
+
+
+    let all_upload = crate::dispatch::Span::pieces(
+        &shader,
+        &[0, 8],
+        4096,
+        crate::dispatch::AccessDirection::Upload,
+    )
+    .expect("pieces");
+    let all_readback = crate::dispatch::Span::pieces(
+        &shader,
+        &[0, 8],
+        4096,
+        crate::dispatch::AccessDirection::Readback,
+    )
+    .expect("pieces");
+    assert_eq!(
+        all_upload, all_readback,
+        "unclassified shader must keep both directions identical"
+    );
+    let classified = crate::types::Shader {
+        read_slots: vec![0],
+        write_slots: vec![1],
+        ..shader.clone()
+    };
+    let upload = crate::dispatch::Span::pieces(
+        &classified,
+        &[0, 8],
+        4096,
+        crate::dispatch::AccessDirection::Upload,
+    )
+    .expect("pieces");
+    let readback = crate::dispatch::Span::pieces(
+        &classified,
+        &[0, 8],
+        4096,
+        crate::dispatch::AccessDirection::Readback,
+    )
+    .expect("pieces");
+    assert_eq!(
+        upload,
+        vec![(0, 36)],
+        "write-only slot must not be uploaded"
+    );
+    assert_eq!(
+        readback,
+        vec![(8, 44)],
+        "read-only slot must not be read back"
     );
 
 
@@ -194,6 +245,8 @@ fn negative_offset_needs_lower_bound_slack() {
         max_stride_bytes: 4,
         index_field: None,
         launch_count: None,
+        read_slots: Vec::new(),
+        write_slots: Vec::new(),
     };
 
 
@@ -233,6 +286,8 @@ fn strided_access_must_account_for_the_real_stride() {
         max_stride_bytes: 8,
         index_field: None,
         launch_count: None,
+        read_slots: Vec::new(),
+        write_slots: Vec::new(),
     };
 
 
@@ -246,7 +301,15 @@ fn strided_access_must_account_for_the_real_stride() {
 
     let unit_stride = crate::types::Shader {
         max_stride_bytes: 4,
-        ..shader
+        source: shader.source,
+        workgroup_size: shader.workgroup_size,
+        dispatch: shader.dispatch,
+        min_offset_bytes: shader.min_offset_bytes,
+        max_constant_bytes: shader.max_constant_bytes,
+        index_field: shader.index_field,
+        launch_count: shader.launch_count,
+        read_slots: shader.read_slots.clone(),
+        write_slots: shader.write_slots.clone(),
     };
     crate::dispatch::check(&unit_stride, &[0], 40000)
         .expect("with unit stride, 40000 is enough — counterexample holds");
@@ -269,6 +332,8 @@ fn downward_index_start_extends_the_copy_range() {
         max_stride_bytes: 4,
         index_field: Some(0),
         launch_count: None,
+        read_slots: Vec::new(),
+        write_slots: Vec::new(),
     };
     let (_lo, hi) = crate::dispatch::touched_range(&shader, &[12, 4, 64], 65536).expect("range");
     assert!(hi >= 108, "copy must cover the highest store, hi={hi}");
@@ -286,6 +351,8 @@ fn index_start_is_not_an_alias_base() {
         max_stride_bytes: 4,
         index_field: Some(0),
         launch_count: None,
+        read_slots: Vec::new(),
+        write_slots: Vec::new(),
     };
     crate::dispatch::check(&shader, &[20, 12, 16], 65536)
         .expect("the start slot is an index, not a second pointer");
@@ -305,11 +372,19 @@ fn upward_byte_pointer_writeback_includes_destination() {
         max_stride_bytes: 4,
         index_field: Some(0),
         launch_count: None,
+        read_slots: Vec::new(),
+        write_slots: Vec::new(),
     };
     let params = [83240_u32, 83268, 83280, 0, 0];
     crate::dispatch::check(&shader, &params, 16_777_216)
         .expect("destination before source must not be refused");
-    let pieces = crate::dispatch::Span::pieces(&shader, &params, 16_777_216).expect("pieces");
+    let pieces = crate::dispatch::Span::pieces(
+        &shader,
+        &params,
+        16_777_216,
+        crate::dispatch::AccessDirection::Readback,
+    )
+    .expect("pieces");
     assert!(
         pieces.iter().any(|(lo, hi)| *lo <= 83240 && *hi >= 83268),
         "destination bytes must be written back, pieces={pieces:?}"
@@ -332,6 +407,8 @@ fn downward_index_range_includes_the_low_stores() {
         max_stride_bytes: 8,
         index_field: Some(0),
         launch_count: None,
+        read_slots: Vec::new(),
+        write_slots: Vec::new(),
     };
     let (lo, hi) = crate::dispatch::touched_range(&shader, &[40, 4], 65536).expect("range");
     assert!(
@@ -356,6 +433,8 @@ fn downward_trip_count_exceeds_the_limit_field() {
         max_stride_bytes: 8,
         index_field: Some(0),
         launch_count: None,
+        read_slots: Vec::new(),
+        write_slots: Vec::new(),
     };
     assert_eq!(crate::dispatch::invocation_count(&shader, &[200, 4], 4), 98);
     assert_eq!(crate::dispatch::invocation_count(&shader, &[133, 4], 4), 65);
@@ -376,6 +455,8 @@ fn upward_byte_guard_launches_the_byte_span() {
         max_stride_bytes: 4,
         index_field: Some(0),
         launch_count: None,
+        read_slots: Vec::new(),
+        write_slots: Vec::new(),
     };
     assert_eq!(
         crate::dispatch::invocation_count(&shader, &[83240, 83268], 83268),
@@ -396,6 +477,8 @@ fn constant_downward_launch_uses_the_trip_count() {
         max_stride_bytes: 8,
         index_field: None,
         launch_count: Some(98),
+        read_slots: Vec::new(),
+        write_slots: Vec::new(),
     };
     assert_eq!(crate::dispatch::scheduled_invocations(&shader, &[], 4), 98);
     let mut kept = shader;
@@ -543,6 +626,8 @@ fn mask_add_limit_keeps_the_index_span() {
         max_stride_bytes: 64,
         index_field: Some(0),
         launch_count: None,
+        read_slots: Vec::new(),
+        write_slots: Vec::new(),
     };
     let params = [100_000_u32, 100_200, 200_000];
     let (lo, hi) =
@@ -616,6 +701,8 @@ fn mask_add_dispatch_is_trip_count_not_absolute_address() {
             max_stride_bytes: 64,
             index_field: Some(0),
             launch_count: None,
+            read_slots: Vec::new(),
+            write_slots: Vec::new(),
         }
     }
 
@@ -645,6 +732,8 @@ fn sum_shift_limit_keeps_the_index_span_and_skips_value_slots() {
         max_stride_bytes: 32,
         index_field: Some(0),
         launch_count: None,
+        read_slots: Vec::new(),
+        write_slots: Vec::new(),
     };
     let params = [735_588_u32, 735_584, 208_353, 0xFFFF_FFFF];
     let (lo, hi) =
