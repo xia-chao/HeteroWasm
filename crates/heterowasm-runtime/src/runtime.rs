@@ -251,5 +251,7 @@ fn shader_of(kernel: &KernelSpec) -> Shader<'_> {
         max_stride_bytes: kernel.max_stride_bytes,
         index_field: kernel.index_field,
         launch_count: kernel.launch_count,
+        read_slots: kernel.read_slots.clone(),
+        write_slots: kernel.write_slots.clone(),
     }
 }

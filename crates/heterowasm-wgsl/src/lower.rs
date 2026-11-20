@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use heterowasm_address::{AccessKind, AddressRecovery, MemoryAccess, NormalizedAddress};
 use heterowasm_bounds::LoopExtent;
@@ -22,6 +22,28 @@ pub(crate) struct Emitter {
     pub(crate) max_stride_bytes: i64,
 
     trip: String,
+
+    pub(crate) read_slots: BTreeSet<usize>,
+    pub(crate) write_slots: BTreeSet<usize>,
+}
+
+impl Emitter {
+
+    fn note(&mut self, index: &str, writes: bool) {
+        let mut rest = index;
+        while let Some(at) = rest.find("params.p") {
+            rest = &rest[at + "params.p".len()..];
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            if let Ok(slot) = digits.parse::<usize>() {
+                if writes {
+                    self.write_slots.insert(slot);
+                } else {
+                    self.read_slots.insert(slot);
+                }
+            }
+            rest = &rest[digits.len()..];
+        }
+    }
 }
 
 
@@ -48,6 +70,8 @@ pub fn lower(
         max_constant_bytes: 0,
         max_stride_bytes: 0,
         trip: "i".to_string(),
+        read_slots: BTreeSet::new(),
+        write_slots: BTreeSet::new(),
     };
 
 
@@ -511,6 +535,7 @@ pub fn lower(
             .normalized(evolution)
             .ok_or(LowerError::UnsupportedBase)?;
         let index = word_index(&normalized, body, evolution, &members, &mut emitter)?;
+        emitter.note(&index, true);
         let stored = stored_operand(body, access.value)?;
         let value = value_expression(body, stored, evolution, &members, &mut emitter, 256)?;
         emitter.statements.push(render_store(&index, &value.text));
@@ -638,6 +663,8 @@ pub fn lower(
         min_constant_bytes: emitter.min_constant_bytes,
         max_constant_bytes: emitter.max_constant_bytes,
         max_stride_bytes: emitter.max_stride_bytes,
+        read_slots: emitter.read_slots.iter().copied().collect(),
+        write_slots: emitter.write_slots.iter().copied().collect(),
         index_field: match start {
             Some(StartOffset::Field(position)) => Some(position),
             Some(StartOffset::SumShift(_, _, _)) | Some(StartOffset::Scaled(_, _, _, _)) => None,
@@ -954,6 +981,7 @@ fn value_expression(
             let normalized = NormalizedAddress::of(&form, i64::from(memory.offset), evolution)
                 .ok_or(LowerError::UnsupportedBase)?;
             let index = word_index(&normalized, body, evolution, members, emitter)?;
+            emitter.note(&index, false);
             Ok(Rendered::atom(load_expression(&index)))
         }
         ValueDef::Operator(operator, args, _) => {

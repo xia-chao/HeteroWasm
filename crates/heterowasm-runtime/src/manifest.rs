@@ -89,6 +89,21 @@ pub(crate) fn parse_kernel(
     };
     let fields_resolved = flag_after(text, "fields_resolved");
 
+    let read_slots = array_after(text, "read_slots")
+        .map(|list| {
+            list.split(',')
+                .filter_map(|piece| piece.trim().parse::<usize>().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    let write_slots = array_after(text, "write_slots")
+        .map(|list| {
+            list.split(',')
+                .filter_map(|piece| piece.trim().parse::<usize>().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
     Ok(KernelSpec {
         name: name.to_string(),
         source,
@@ -108,6 +123,8 @@ pub(crate) fn parse_kernel(
             .and_then(|value| usize::try_from(value).ok()),
         launch_count: number_after(text, "launch_count")
             .and_then(|value| u32::try_from(value).ok()),
+        read_slots,
+        write_slots,
     })
 }
 
