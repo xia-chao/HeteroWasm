@@ -43,7 +43,43 @@ pub(crate) fn compile(
     })?;
 
 
-    let plan_set = heterowasm_wgsl::plan_gpu_loops(&module, &trace);
+    let shift = usize::from(prepared.injected_from_wat);
+    let shape_matches = prepared.probe_funcs + shift == module.funcs.len()
+        && prepared
+            .probe_shape
+            .iter()
+            .enumerate()
+            .all(|(index, shape)| {
+                let body = module
+                    .funcs
+                    .get(Func::new(index + shift))
+                    .and_then(FuncDecl::body);
+                match shape {
+                    Some((blocks, values)) => body.is_some_and(|body| {
+                        body.blocks.len() == *blocks && body.values.len() == *values
+                    }),
+                    None => body.is_none(),
+                }
+            });
+    let plan_set = match prepared.plans {
+        Some(plans) => {
+            let shifted = plans.shifted(shift);
+            if shape_matches && shifted.fits_module(&module, &trace) {
+                shifted
+            } else {
+                trace
+                    .info(
+                        Stage::Runtime,
+                        "plan reuse rejected; re-planning on the loaded module",
+                    )
+                    .field("function_shift", shift)
+                    .field("shape_matches", shape_matches)
+                    .emit();
+                heterowasm_wgsl::plan_gpu_loops(&module, &trace)
+            }
+        }
+        None => heterowasm_wgsl::plan_gpu_loops(&module, &trace),
+    };
     let fusion_only: HashSet<Func> = plan_set.fusion_candidates.clone();
     let fused = if fusion_only.is_empty() {
         None
@@ -145,6 +181,12 @@ struct Prepared {
 
     original: Vec<u8>,
     injected_from_wat: bool,
+
+    plans: Option<LoopPlanSet>,
+
+    probe_shape: Vec<Option<(usize, usize)>>,
+
+    probe_funcs: usize,
 }
 
 
@@ -169,18 +211,49 @@ fn prepare_input(raw: &[u8], trace: &Trace) -> Result<Prepared, CliError> {
             original: raw.to_vec(),
             bytes: raw.to_vec(),
             injected_from_wat: false,
+            plans: None,
+            probe_shape: Vec::new(),
+            probe_funcs: 0,
         });
     };
 
     let probe_bytes = wat::parse_str(text).map_err(|err| CliError::Message(err.to_string()))?;
 
-    let arity = {
+    let normalized = normalize_bulk_memory(&probe_bytes, trace);
+    let mut probe =
+        load_module(&normalized, trace).map_err(|err| CliError::Message(err.to_string()))?;
+    expand_all_bodies(&mut probe, trace).map_err(|err| CliError::Message(err.to_string()))?;
 
-        let normalized = normalize_bulk_memory(&probe_bytes, trace);
-        let mut probe =
-            load_module(&normalized, trace).map_err(|err| CliError::Message(err.to_string()))?;
-        expand_all_bodies(&mut probe, trace).map_err(|err| CliError::Message(err.to_string()))?;
+
+    let plans = heterowasm_wgsl::plan_gpu_loops(&probe, trace);
+    let probe_funcs = probe.funcs.len();
+    let probe_shape: Vec<Option<(usize, usize)>> = probe
+        .funcs
+        .iter()
+        .map(|func| {
+            probe.funcs[func]
+                .body()
+                .map(|body| (body.blocks.len(), body.values.len()))
+        })
+        .collect();
+
+
+    let width = plans
+        .eligible
+        .iter()
+        .fold((0_usize, 0_usize), |(fields, results), plan| {
+            (
+                fields.max(plan.kernel.fields.len()),
+                results.max(plan.kernel.results.len()),
+            )
+        });
+    let arity = if plans.eligible.is_empty() {
         heterowasm_wgsl::plan_gpu_arity(&probe, trace)
+    } else {
+        Ok(heterowasm_wgsl::DispatchShape {
+            fields: width.0,
+            results: width.1,
+        })
     };
     match arity {
 
@@ -196,6 +269,9 @@ fn prepare_input(raw: &[u8], trace: &Trace) -> Result<Prepared, CliError> {
                 original: probe_bytes,
                 bytes,
                 injected_from_wat: true,
+                plans: Some(plans),
+                probe_shape,
+                probe_funcs,
             })
         }
         Err(reason) => {
@@ -204,6 +280,9 @@ fn prepare_input(raw: &[u8], trace: &Trace) -> Result<Prepared, CliError> {
                 original: probe_bytes.clone(),
                 bytes: probe_bytes,
                 injected_from_wat: false,
+                plans: Some(plans),
+                probe_shape,
+                probe_funcs,
             })
         }
     }
