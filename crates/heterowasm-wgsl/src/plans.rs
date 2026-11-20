@@ -136,6 +136,72 @@ pub mod planning {
         pub fn skipped(&self) -> usize {
             self.skipped_legality + self.skipped_lower + self.skipped_gate + self.skipped_exit
         }
+
+
+        pub fn shifted(mut self, shift: usize) -> LoopPlanSet {
+            if shift == 0 {
+                return self;
+            }
+            let bumped = |func: Func| Func::new(func.index() + shift);
+            for plan in &mut self.eligible {
+                plan.func = bumped(plan.func);
+            }
+            for plan in &mut self.rewritable {
+                plan.func = bumped(plan.func);
+            }
+            self.fusion_candidates = self
+                .fusion_candidates
+                .iter()
+                .map(|func| bumped(*func))
+                .collect();
+            let inputs = std::mem::take(&mut self.fusion_inputs);
+            self.fusion_inputs = inputs.into_shifted(shift);
+            self
+        }
+
+
+        pub fn fits_module(&self, module: &Module<'_>, trace: &Trace) -> bool {
+            let mut by_func: HashMap<Func, Vec<&OffloadPlan>> = HashMap::new();
+            for plan in self.eligible.iter().chain(self.rewritable.iter()) {
+                by_func.entry(plan.func).or_default().push(plan);
+            }
+            for (func, plans) in by_func {
+                let Some(body) = module.funcs.get(func).and_then(FuncDecl::body) else {
+                    return false;
+                };
+                let loops = ControlFlow::analyze(body, trace).natural_loops(body, trace);
+                for plan in plans {
+                    let Some(natural) = loops.iter().find(|natural| natural.header == plan.header)
+                    else {
+                        return false;
+                    };
+                    let members: HashSet<Block> = natural.blocks.iter().copied().collect();
+                    let planned: HashSet<Block> = plan.members.iter().copied().collect();
+                    if members != planned {
+                        return false;
+                    }
+                }
+            }
+
+            for (func, collected) in &self.fusion_inputs.by_func {
+                let Some(body) = module.funcs.get(*func).and_then(FuncDecl::body) else {
+                    return false;
+                };
+                let loops = ControlFlow::analyze(body, trace).natural_loops(body, trace);
+                for (planned, _, _) in collected {
+                    let Some(natural) = loops
+                        .iter()
+                        .find(|natural| natural.header == planned.header)
+                    else {
+                        return false;
+                    };
+                    if natural.blocks != planned.blocks {
+                        return false;
+                    }
+                }
+            }
+            true
+        }
     }
 
 
