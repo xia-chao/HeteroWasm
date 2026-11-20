@@ -1,5 +1,7 @@
 # HeteroWasm
 
+[![CI](https://github.com/xia-chao/HeteroWasm/actions/workflows/ci.yml/badge.svg)](https://github.com/xia-chao/HeteroWasm/actions/workflows/ci.yml)
+
 HeteroWasm is a conservative compiler from ordinary WebAssembly to WebGPU.
 
 It takes a WebAssembly program and finds the data-parallel loops that can be shown safe to run together. Only those regions become a WebGPU compute shader. The original program remains the CPU implementation: a region stays there when it cannot be shown safe, and it stays there when the GPU would be slower.
@@ -78,6 +80,15 @@ keeps the CPU path because the Wasm would trap while the GPU would not.
 
 The four Horner bodies are `corpus/synthetic/intensity/horner{16,24,32,40}.wat`.
 
+## Installing
+
+Prebuilt binaries are attached to each [release](https://github.com/xia-chao/HeteroWasm/releases): Linux x86-64, macOS arm64, macOS x86-64. Every archive contains the `heterowasm` binary and `LICENSE`; a `.sha256` file is published next to each archive.
+
+```bash
+tar -xzf heterowasm-x86_64-unknown-linux-gnu.tar.gz
+./heterowasm --help
+```
+
 ## Compiling
 
 Rust 1.98 or newer.
@@ -100,8 +111,8 @@ Real inputs on the same machine, release build, median of six runs:
 
 | program | size | compile |
 | --- | --- | --- |
-| Draco decoder | 286 KB | ≈0.5 s |
-| Basis transcoder | 490 KB | ≈0.35 s |
+| Draco decoder | 286 KB | ≈0.10 s |
+| Basis transcoder | 490 KB | ≈0.06 s |
 
 On the Draco build the rewritten program dispatches nothing: one loop clears the gate, and the decode path does not enter it. [docs/BOUNDARIES.md](docs/BOUNDARIES.md) has the per-stage counts and how to read the refusal lines — `compile` prints one `skip` line per refusal, and `analyze --trace-jsonl` writes one event per obligation.
 
@@ -135,7 +146,7 @@ The buffers are either exactly the same range, in place, or fully apart. A parti
 cargo test --workspace
 ```
 
-The suite currently reports 168 passing tests. Tests that read the large compiled corpus artifacts skip when those artifacts are absent, so a clean clone is green.
+The suite currently reports 170 passing tests. A clean clone runs 168 of them: the two tests that read the large compiled corpus artifacts skip when those artifacts are absent, so a clean clone is green. CI runs the same suite on every push and pull request, with the five tests that need a real GPU device skipped explicitly because hosted runners have no GPU.
 
 ## License
 

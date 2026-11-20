@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    name: quality (fmt + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: test (CPU; GPU cases skipped, hosted runners have no device)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      # Hosted runners have no GPU. These five tests build a real wgpu device and
+      # compare CPU against GPU; they are skipped explicitly instead of failing,
+      # and everything else still runs. They stay mandatory locally.
+      - name: Test
+        run: |
+          cargo test --locked --workspace --all-features -- \
+            --skip tests::crossover_scan_small_n \
+            --skip tests::crossover_scan_intensity \
+            --skip tests::crossover_formal_measurement \
+            --skip tests::artifact_round_trip_through_disk_runs_and_matches_wasm \
+            --skip tests::whole_program_split_across_cpu_and_gpu
+
+  eval:
+    name: eval (Gate 1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build CLI
+        run: cargo build --locked --release -p heterowasm-cli
+
+      - name: Run the corpus evaluation
+        run: |
+          set -o pipefail
+          ./target/release/heterowasm eval 2>/dev/null | tee eval.txt
+          if ! grep -qE '^  GO$' eval.txt; then
+            echo "::error::Gate 1 did not pass"
+            exit 1
+          fi
+          if grep -q ' FAIL' eval.txt; then
+            echo "::error::an eval criterion failed"
+            exit 1
+          fi
