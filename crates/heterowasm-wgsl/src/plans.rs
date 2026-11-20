@@ -138,6 +138,19 @@ pub mod planning {
         }
 
 
+        pub fn analysis_funcs(&self) -> Vec<Func> {
+            let mut funcs: HashSet<Func> = HashSet::new();
+            for plan in self.eligible.iter().chain(self.rewritable.iter()) {
+                funcs.insert(plan.func);
+            }
+            funcs.extend(self.fusion_inputs.by_func.keys().copied());
+            funcs.extend(self.fusion_candidates.iter().copied());
+            let mut ordered: Vec<Func> = funcs.into_iter().collect();
+            ordered.sort_by_key(|func| func.index());
+            ordered
+        }
+
+
         pub fn shifted(mut self, shift: usize) -> LoopPlanSet {
             if shift == 0 {
                 return self;
