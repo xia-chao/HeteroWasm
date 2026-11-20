@@ -845,7 +845,6 @@ dependencies = [
  "heterowasm-trace",
  "heterowasm-wgsl",
  "thiserror 2.0.21",
- "wasmprinter",
  "wasmtime",
  "wat",
 ]

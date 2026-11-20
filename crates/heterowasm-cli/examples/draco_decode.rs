@@ -19,7 +19,6 @@ use heterowasm_legality as _;
 use heterowasm_scev as _;
 use heterowasm_wgsl as _;
 use thiserror as _;
-use wasmprinter as _;
 use wat as _;
 
 

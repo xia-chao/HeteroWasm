@@ -191,33 +191,14 @@ struct Prepared {
 
 
 fn prepare_input(raw: &[u8], trace: &Trace) -> Result<Prepared, CliError> {
-    let disassembled;
-    let wat_input: Option<&str> = match std::str::from_utf8(raw)
+
+    let probe_bytes = match std::str::from_utf8(raw)
         .ok()
         .filter(|text| text.trim_start().starts_with("(module"))
     {
-        Some(text) => Some(text),
-        None => match wasmprinter::print_bytes(raw) {
-            Ok(text) => {
-                disassembled = text;
-                Some(disassembled.as_str())
-            }
-            Err(_) => None,
-        },
+        Some(text) => wat::parse_str(text).map_err(|err| CliError::Message(err.to_string()))?,
+        None => raw.to_vec(),
     };
-
-    let Some(text) = wat_input else {
-        return Ok(Prepared {
-            original: raw.to_vec(),
-            bytes: raw.to_vec(),
-            injected_from_wat: false,
-            plans: None,
-            probe_shape: Vec::new(),
-            probe_funcs: 0,
-        });
-    };
-
-    let probe_bytes = wat::parse_str(text).map_err(|err| CliError::Message(err.to_string()))?;
 
     let normalized = normalize_bulk_memory(&probe_bytes, trace);
     let mut probe =
