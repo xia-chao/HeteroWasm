@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- GitHub Actions now run on every push and pull request: formatting, clippy with warnings
+  denied, the workspace test suite (the five tests that need a real GPU device are skipped
+  explicitly on hosted runners) and the corpus evaluation with its Gate 1 verdict. A release
+  workflow builds Linux x86-64 and macOS arm64/x86-64 archives with checksums on tag pushes and
+  attaches them to the GitHub Release; a manual run builds those archives without publishing.
+  The README gained the CI badge and an install section pointing at the release assets.
 - Address recovery and the effects proof obligation no longer rescan the whole function body
   per loop: both now build a per-function candidate index (memory-access values and
   side-effecting operators respectively) and walk only loop members. Compile time: Draco decoder
