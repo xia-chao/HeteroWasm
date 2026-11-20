@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Planning caches each function's side-effect and store facts once (per block) instead of
+  re-scanning every value of the function for every loop. Compile time: Draco decoder
+  0.141s to 0.116s (18% faster), Basis transcoder 0.100s to 0.078s (22% faster), mappings
+  0.038s to 0.023s (41% faster). Artifacts and stdout are byte-identical on all corpus inputs.
 - The kernel manifest now records which uniform slots are used as read and write bases, and the
   runtime transfers only what each direction needs: uploads cover read ranges, readbacks cover
   written ranges. Measured on the same artifacts with the old and new runtime alternating: the
