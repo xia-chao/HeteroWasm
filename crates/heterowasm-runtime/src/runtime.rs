@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use heterowasm_trace::{Stage, Trace};
+use heterowasm_trace::{Level, Stage, Trace};
 use wasmtime::{Engine, Extern, Instance, Linker, Module, Store, Val};
 
 use crate::error::RuntimeError;
@@ -156,7 +156,11 @@ impl Runtime {
 
 
     pub fn run(&mut self, entry: &str, args: &[Val]) -> Result<Vec<Val>, RuntimeError> {
-        let _scope = self.trace.stage(Stage::Runtime, "run");
+
+        let _scope = self
+            .trace
+            .enabled(Level::Debug)
+            .then(|| self.trace.stage(Stage::Runtime, "run"));
 
         self.store.data_mut().calls = 0;
         let func = self
@@ -173,12 +177,14 @@ impl Runtime {
                 reason: describe(&error),
             })?;
 
-        self.trace
-            .info(Stage::Runtime, "call finished")
-            .field("entry", entry)
-            .field("dispatches", self.store.data().total)
-            .field("results", results.len())
-            .emit();
+        if self.trace.enabled(Level::Info) {
+            self.trace
+                .info(Stage::Runtime, "call finished")
+                .field("entry", entry)
+                .field("dispatches", self.store.data().total)
+                .field("results", results.len())
+                .emit();
+        }
         Ok(results)
     }
 
