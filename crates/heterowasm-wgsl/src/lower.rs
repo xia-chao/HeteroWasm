@@ -8,7 +8,7 @@ use heterowasm_trace::{Stage, Trace};
 use waffle::{Block, FunctionBody, Operator, Value, ValueDef};
 
 use crate::error::LowerError;
-use crate::types::{Dispatch, Kernel};
+use crate::types::{Dispatch, Kernel, NumericMode};
 
 
 pub(crate) struct Emitter {
@@ -25,6 +25,8 @@ pub(crate) struct Emitter {
 
     pub(crate) read_slots: BTreeSet<usize>,
     pub(crate) write_slots: BTreeSet<usize>,
+
+    pub(crate) numeric: NumericMode,
 }
 
 impl Emitter {
@@ -56,6 +58,33 @@ pub fn lower(
     workgroup_size: u32,
     trace: &Trace,
 ) -> Result<Kernel, LowerError> {
+    lower_with_mode(
+        body,
+        natural_loop,
+        accesses,
+        evolution,
+        extent,
+        workgroup_size,
+        NumericMode::Exact,
+        trace,
+    )
+}
+
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent analysis input; packing them would hide provenance"
+)]
+pub fn lower_with_mode(
+    body: &FunctionBody,
+    natural_loop: &NaturalLoop,
+    accesses: &[MemoryAccess],
+    evolution: &ScalarEvolution,
+    extent: Option<LoopExtent>,
+    workgroup_size: u32,
+    numeric: NumericMode,
+    trace: &Trace,
+) -> Result<Kernel, LowerError> {
     let _scope = trace.stage(Stage::Wgsl, "loop");
 
     let extent = extent.ok_or(LowerError::NoExtent)?;
@@ -72,6 +101,7 @@ pub fn lower(
         trip: "i".to_string(),
         read_slots: BTreeSet::new(),
         write_slots: BTreeSet::new(),
+        numeric,
     };
 
 
@@ -536,9 +566,19 @@ pub fn lower(
             .ok_or(LowerError::UnsupportedBase)?;
         let index = word_index(&normalized, body, evolution, &members, &mut emitter)?;
         emitter.note(&index, true);
-        let stored = stored_operand(body, access.value)?;
+        let (stored, store_kind) = stored_operand(body, access.value)?;
+        if store_kind == ScalarKind::F32 && !emitter.numeric.allows_f32() {
+            return Err(LowerError::UnsupportedOperator);
+        }
         let value = value_expression(body, stored, evolution, &members, &mut emitter, 256)?;
-        emitter.statements.push(render_store(&index, &value.text));
+        if value.kind != store_kind {
+            return Err(LowerError::UnsupportedValueKind);
+        }
+        let statement = match store_kind {
+            ScalarKind::I32 => render_store(&index, &value.text),
+            ScalarKind::F32 => render_store_f32(&index, &value.text),
+        };
+        emitter.statements.push(statement);
     }
 
 
@@ -562,9 +602,16 @@ pub fn lower(
             .iter()
             .find(|variable| canonical_value(body, variable.value) == canonical)
         {
+            if rendered.kind == ScalarKind::F32 {
+                return Err(LowerError::UnsupportedValueKind);
+            }
             rendered = rendered.plus_constant(induction.step);
         }
-        results.push(rendered.text);
+        if rendered.kind == ScalarKind::F32 {
+            results.push(format!("bitcast<u32>({})", rendered.text));
+        } else {
+            results.push(rendered.text);
+        }
     }
 
 
@@ -915,14 +962,19 @@ fn word_index(
 }
 
 
-fn stored_operand(body: &FunctionBody, instruction: Value) -> Result<Value, LowerError> {
+fn stored_operand(
+    body: &FunctionBody,
+    instruction: Value,
+) -> Result<(Value, ScalarKind), LowerError> {
     let canonical = canonical_value(body, instruction);
-    let Some(ValueDef::Operator(Operator::I32Store { .. }, args, _)) = body.values.get(canonical)
-    else {
-        return Err(LowerError::UnsupportedStoreShape);
+    let (kind, args) = match body.values.get(canonical) {
+        Some(ValueDef::Operator(Operator::I32Store { .. }, args, _)) => (ScalarKind::I32, args),
+        Some(ValueDef::Operator(Operator::F32Store { .. }, args, _)) => (ScalarKind::F32, args),
+        _ => return Err(LowerError::UnsupportedStoreShape),
     };
     let operands: &[Value] = &body.arg_pool[*args];
-    operands.get(1).copied().ok_or(LowerError::MissingOperand)
+    let value = operands.get(1).copied().ok_or(LowerError::MissingOperand)?;
+    Ok((value, kind))
 }
 
 
@@ -939,10 +991,14 @@ fn value_expression(
         return Err(LowerError::ExpressionTooDeep);
     }
     let canonical = canonical_value(body, value);
+    let kind = value_scalar_kind(body, canonical).unwrap_or(ScalarKind::I32);
 
-    if let Some(constant) = constant_value(body, canonical) {
-        let narrowed = i32::try_from(constant).unwrap_or(0);
-        return Ok(Rendered::atom(constant_index(i64::from(narrowed as u32))));
+
+    if kind == ScalarKind::I32 {
+        if let Some(constant) = constant_value(body, canonical) {
+            let narrowed = i32::try_from(constant).unwrap_or(0);
+            return Ok(Rendered::atom(constant_index(i64::from(narrowed as u32))));
+        }
     }
 
     let Some(definition) = body.values.get(canonical) else {
@@ -951,9 +1007,19 @@ fn value_expression(
 
     match definition {
         ValueDef::BlockParam(..) => match field_of(body, canonical, evolution, members, emitter) {
-            Ok(field) => Ok(Rendered::atom(field_reference(field))),
+            Ok(field) => {
+                let text = field_reference(field);
+                if kind == ScalarKind::F32 {
+                    Ok(Rendered::f32_atom(format!("bitcast<f32>({text})")))
+                } else {
+                    Ok(Rendered::atom(text))
+                }
+            }
 
             Err(LowerError::UnsupportedFieldAffine) => {
+                if kind == ScalarKind::F32 {
+                    return Err(LowerError::UnsupportedValueKind);
+                }
                 Rendered::affine(body, canonical, evolution, members, emitter, depth)
             }
             Err(other) => Err(other),
@@ -984,16 +1050,56 @@ fn value_expression(
             emitter.note(&index, false);
             Ok(Rendered::atom(load_expression(&index)))
         }
+
+        ValueDef::Operator(Operator::F32Const { value }, _, _) => {
+            if !emitter.numeric.allows_f32() {
+                return Err(LowerError::UnsupportedOperator);
+            }
+            Ok(Rendered::f32_atom(format!("bitcast<f32>(0x{value:08x}u)")))
+        }
+        ValueDef::Operator(Operator::F32Load { memory }, args, _) => {
+            if !emitter.numeric.allows_f32() {
+                return Err(LowerError::UnsupportedOperator);
+            }
+            let operands: &[Value] = &body.arg_pool[*args];
+            let address = *operands.first().ok_or(LowerError::MissingOperand)?;
+            let form = AddressRecovery::form_of(body, evolution, address)
+                .ok_or(LowerError::UnsupportedBase)?;
+            let normalized = NormalizedAddress::of(&form, i64::from(memory.offset), evolution)
+                .ok_or(LowerError::UnsupportedBase)?;
+            let index = word_index(&normalized, body, evolution, members, emitter)?;
+            emitter.note(&index, false);
+            Ok(Rendered::f32_atom(format!(
+                "bitcast<f32>({})",
+                load_expression(&index)
+            )))
+        }
         ValueDef::Operator(operator, args, _) => {
-            let text = binary_operator(operator).ok_or(LowerError::UnsupportedOperator)?;
+            let (text, operand_kind) =
+                binary_operator(operator).ok_or(LowerError::UnsupportedOperator)?;
+            if operand_kind == ScalarKind::F32 && !emitter.numeric.allows_f32() {
+                return Err(LowerError::UnsupportedOperator);
+            }
             let operands: &[Value] = &body.arg_pool[*args];
             let left = *operands.first().ok_or(LowerError::MissingOperand)?;
             let right = *operands.get(1).ok_or(LowerError::MissingOperand)?;
             let left = value_expression(body, left, evolution, members, emitter, depth - 1)?;
             let right = value_expression(body, right, evolution, members, emitter, depth - 1)?;
+            if left.kind != operand_kind || right.kind != operand_kind {
+                return Err(LowerError::UnsupportedValueKind);
+            }
             Ok(binary_expression(&left, text, &right))
         }
         _ => Err(LowerError::UnsupportedValueKind),
+    }
+}
+
+
+fn value_scalar_kind(body: &FunctionBody, canonical: Value) -> Option<ScalarKind> {
+    match body.values.get(canonical)?.ty(&body.type_pool)? {
+        waffle::Type::I32 => Some(ScalarKind::I32),
+        waffle::Type::F32 => Some(ScalarKind::F32),
+        _ => None,
     }
 }
 
@@ -1002,11 +1108,14 @@ fn load_expression(index: &str) -> String {
     format!("mem[{index}]")
 }
 
-fn binary_operator(operator: &Operator) -> Option<&'static str> {
+fn binary_operator(operator: &Operator) -> Option<(&'static str, ScalarKind)> {
     match operator {
-        Operator::I32Add => Some("+"),
-        Operator::I32Sub => Some("-"),
-        Operator::I32Mul => Some("*"),
+        Operator::I32Add => Some(("+", ScalarKind::I32)),
+        Operator::I32Sub => Some(("-", ScalarKind::I32)),
+        Operator::I32Mul => Some(("*", ScalarKind::I32)),
+        Operator::F32Add => Some(("+", ScalarKind::F32)),
+        Operator::F32Sub => Some(("-", ScalarKind::F32)),
+        Operator::F32Mul => Some(("*", ScalarKind::F32)),
         _ => None,
     }
 }
@@ -1029,6 +1138,7 @@ fn binary_expression(left: &Rendered, operator: &str, right: &Rendered) -> Rende
     Rendered {
         text: format!("{left_text} {operator} {right_text}"),
         precedence,
+        kind: left.kind,
     }
 }
 
@@ -1044,9 +1154,17 @@ fn operator_precedence(operator: &str) -> u8 {
 }
 
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScalarKind {
+    I32,
+    F32,
+}
+
+
 struct Rendered {
     text: String,
     precedence: u8,
+    kind: ScalarKind,
 }
 
 impl Rendered {
@@ -1054,6 +1172,16 @@ impl Rendered {
         Rendered {
             text,
             precedence: ATOM,
+            kind: ScalarKind::I32,
+        }
+    }
+
+
+    fn f32_atom(text: String) -> Self {
+        Rendered {
+            text,
+            precedence: ATOM,
+            kind: ScalarKind::F32,
         }
     }
 
@@ -1220,6 +1348,10 @@ fn scaled_index(words: i64, trip: &str) -> String {
 
 fn render_store(index: &str, value: &str) -> String {
     format!("  mem[{index}] = {value};")
+}
+
+fn render_store_f32(index: &str, value: &str) -> String {
+    format!("  mem[{index}] = bitcast<u32>({value});")
 }
 
 

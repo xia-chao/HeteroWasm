@@ -41,6 +41,9 @@ pub enum Command {
 
         #[arg(long)]
         require_offload: bool,
+
+        #[arg(long)]
+        numeric: bool,
     },
 
     Run {
