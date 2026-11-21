@@ -146,7 +146,7 @@ The buffers are either exactly the same range, in place, or fully apart. A parti
 cargo test --workspace
 ```
 
-The suite currently reports 170 passing tests. A clean clone runs 168 of them: the two tests that read the large compiled corpus artifacts skip when those artifacts are absent, so a clean clone is green. CI runs the same suite on every push and pull request, with the five tests that need a real GPU device skipped explicitly because hosted runners have no GPU.
+The suite currently reports 170 passing tests. A clean clone runs 168 of them: the two tests that read the large compiled corpus artifacts skip when those artifacts are absent, so a clean clone is green. CI runs the same suite on every push and pull request, with the eleven tests that need a real GPU device skipped explicitly because hosted runners have no GPU.
 
 ## License
 
