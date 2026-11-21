@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Kernels are no longer capped by wgpu's 65535-workgroups-per-dimension limit: the generated
+  shader walks the trip in stride-sized batches and the host clamps the dispatch count. A
+  32-multiply loop with 5,000,000 elements now runs correctly (7.7x faster than the CPU on the
+  M2 measurement) where it previously failed validation above 4,194,240 elements. Only the WGSL
+  text changes; manifests and the rewritten module stay byte-identical.
 - CI and local development now pin one compiler (`rust-toolchain.toml`, 1.98.1, the
   workspace minimum). On a newer `stable` the thin binary's `unused_crate_dependencies`
   expectation becomes unfulfilled and `-D warnings` fails, so the hosted runner and the
