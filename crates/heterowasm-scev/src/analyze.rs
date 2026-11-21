@@ -165,6 +165,19 @@ impl ScalarEvolution {
                 )
                 .field("duplicate", recurrence_report.duplicate)
                 .field("multiple_stores", recurrence_report.multiple_stores)
+
+                .field(
+                    "fixable_structural",
+                    usize::from(
+                        recurrence_report.stores_in_loop > 0
+                            && recurrence_report.not_add_of_load == 0
+                            && recurrence_report.address_mismatch == 0
+                            && recurrence_report.memory_mismatch == 0
+                            && recurrence_report.address_not_invariant == 0
+                            && (recurrence_report.multiple_stores > 0
+                                || recurrence_report.duplicate > 0),
+                    ),
+                )
                 .emit();
         }
 
