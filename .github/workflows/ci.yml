@@ -66,7 +66,10 @@ jobs:
 
       - name: Test
         run: |
-          cargo test --locked --workspace --all-features -- \
+          # The software Vulkan driver is not reliable when several GPU tests
+          # create devices concurrently: the wgsl test binary segfaulted with
+          # the default thread count. Run the suite one test at a time.
+          cargo test --locked --workspace --all-features -- --test-threads=1 \
             --skip tests::crossover_scan_small_n \
             --skip tests::crossover_scan_intensity \
             --skip tests::crossover_formal_measurement \
