@@ -51,10 +51,11 @@ wasmparser = "0.248"
 wasm-encoder = { version = "0.248", features = ["wasmparser"] }
 # WGSL reference front-end (naga is wgpu's shader front-end). Used only to
 # **independently validate** emitted text: it is not ours and does not share our
-# subset model, so it catches what our evaluator misses. Real GPU execution on
-# macOS goes through Metal (no NVIDIA). default-features off; keep metal + wgsl
-# — we only need compute and the WGSL front-end.
-wgpu = { version = "30.0.1", default-features = false, features = ["metal", "wgsl"] }
+# subset model, so it catches what our evaluator misses. Real GPU execution goes
+# through Metal on macOS and Vulkan on Linux, so both backends stay enabled; a
+# metal-only build has no backend at all on Linux and panics when an instance is
+# created. default-features off; wgsl is the only other feature we need.
+wgpu = { version = "30.0.1", default-features = false, features = ["metal", "vulkan", "wgsl"] }
 naga = { version = "30.0.1", default-features = false, features = ["wgsl-in"] }
 # Test corpus is WAT text — far more readable than hand-built wasm binaries.
 #
