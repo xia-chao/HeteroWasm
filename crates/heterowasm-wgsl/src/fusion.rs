@@ -203,6 +203,58 @@ pub(crate) fn resolve_at_entry(body: &FunctionBody, value: Value) -> Result<Valu
 }
 
 
+pub fn plan_gpu_fusion_reduction_from(
+    module: &Module<'_>,
+    trace: &Trace,
+    only: Option<&HashSet<Func>>,
+    input: &from_plans::FusionInput,
+) -> Result<Option<GpuFusionPlan>, String> {
+    for func in module.funcs.iter() {
+        if let Some(only) = only {
+            if !only.contains(&func) {
+                continue;
+            }
+        }
+        let Some(body) = module.funcs[func].body() else {
+            continue;
+        };
+        let Some(collected) = input.loops_of(func) else {
+            continue;
+        };
+        let Some((_, producer_index, consumer_index)) =
+            fusable_pairs(body, collected).into_iter().next()
+        else {
+            continue;
+        };
+        let producer = &collected[producer_index].0;
+        let consumer = &collected[consumer_index].0;
+        let producer_evolution = ScalarEvolution::analyze(body, producer, trace);
+        let consumer_evolution = ScalarEvolution::analyze(body, consumer, trace);
+        let producer_recovery =
+            AddressRecovery::analyze_loop(body, &producer_evolution, &producer.blocks, trace);
+        let Some(reduction) =
+            heterowasm_legality::reduction::recognize(body, consumer, &consumer_evolution)
+        else {
+            continue;
+        };
+        let kernel = crate::lower::lower_fused_reduction(
+            body,
+            producer,
+            &producer_evolution,
+            producer_recovery.accesses(),
+            consumer,
+            &consumer_evolution,
+            &reduction,
+            64,
+            trace,
+        )
+        .map_err(|error| error.to_string())?;
+        return Ok(Some(GpuFusionPlan { kernel, func }));
+    }
+    Ok(None)
+}
+
+
 pub fn plan_gpu_fusion(
     module: &Module<'_>,
     trace: &Trace,
@@ -435,6 +487,8 @@ pub(crate) fn fuse_two_chain(
             results: Vec::new(),
 
             fields: producer.fields.clone(),
+
+            reduction: None,
         },
         removed_intermediate: removed_intermediate.to_string(),
     })

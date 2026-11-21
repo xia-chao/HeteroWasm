@@ -13,7 +13,7 @@ pub mod planning {
     use waffle::{Block, Func, FuncDecl, Module, Operator, ValueDef};
 
     use crate::fusion::{from_plans::FusionInput, region_key, Collected, RegionUses};
-    use crate::lower::lower_with_mode;
+    use crate::lower::{lower_reduction, lower_with_mode};
     use crate::single::{loop_exit, offload_loop};
     use crate::types::{Dispatch, Kernel, LoopRegion, NumericMode};
 
@@ -248,6 +248,16 @@ pub mod planning {
         trace: &Trace,
         numeric: NumericMode,
     ) -> LoopPlanSet {
+        plan_gpu_loops_with_options(module, trace, numeric, false)
+    }
+
+
+    pub fn plan_gpu_loops_with_options(
+        module: &Module<'_>,
+        trace: &Trace,
+        numeric: NumericMode,
+        reductions: bool,
+    ) -> LoopPlanSet {
         let mut set = LoopPlanSet {
             eligible: Vec::new(),
             rewritable: Vec::new(),
@@ -319,6 +329,39 @@ pub mod planning {
                     legality.disposition(),
                     Disposition::Gpu | Disposition::GpuAfterGuard
                 ) {
+
+                    let reduction_kernel = if reductions {
+                        heterowasm_legality::reduction::recognize(body, &natural_loop, &evolution)
+                            .and_then(|reduction| {
+                                lower_reduction(
+                                    body,
+                                    &natural_loop,
+                                    &evolution,
+                                    &reduction,
+                                    64,
+                                    trace,
+                                )
+                                .ok()
+                            })
+                    } else {
+                        None
+                    };
+                    if let Some(kernel) = reduction_kernel {
+                        let Ok(exit) = loop_exit(body, &natural_loop.blocks) else {
+                            set.skipped_exit += 1;
+                            continue;
+                        };
+                        set.eligible.push(OffloadPlan {
+                            func,
+                            header: natural_loop.header,
+                            exit,
+                            members: natural_loop.blocks.clone(),
+                            kernel,
+                        });
+
+                        *lowerable_by_func.entry(func).or_insert(0) += 1;
+                        continue;
+                    }
                     set.skipped_legality += 1;
                     match decisive(legality.obligations()) {
                         Some((slot, true)) => set.skipped_illegal[slot] += 1,
@@ -488,5 +531,6 @@ pub mod planning {
 
 pub(crate) use planning::EffectFacts;
 pub use planning::{
-    plan_gpu_loops, plan_gpu_loops_with, rewrite_with_plans, LoopPlanSet, OffloadPlan,
+    plan_gpu_loops, plan_gpu_loops_with, plan_gpu_loops_with_options, rewrite_with_plans,
+    LoopPlanSet, OffloadPlan,
 };

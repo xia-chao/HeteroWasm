@@ -44,6 +44,9 @@ pub enum Command {
 
         #[arg(long)]
         numeric: bool,
+
+        #[arg(long)]
+        reductions: bool,
     },
 
     Run {

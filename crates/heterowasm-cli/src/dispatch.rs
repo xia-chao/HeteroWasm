@@ -27,12 +27,14 @@ pub fn run(cli: &Cli) -> Result<(), CliError> {
             trace_jsonl,
             require_offload,
             numeric,
+            reductions,
         } => crate::compile::compile(
             input,
             output,
             build_trace(trace_jsonl.as_deref())?,
             *require_offload,
             *numeric,
+            *reductions,
         ),
         Command::Run {
             dir,

@@ -82,6 +82,8 @@ pub struct KernelSpec {
 
     pub numeric: bool,
 
+    pub reduction: Option<ReductionSpec>,
+
     pub result_slots: usize,
 
     pub min_offset_bytes: i64,
@@ -115,4 +117,14 @@ pub(crate) struct DispatchMemory<'a> {
 pub(crate) struct DispatchReadback {
     pub(crate) regions: Vec<(usize, Vec<u8>)>,
     pub(crate) exit_values: Vec<u32>,
+
+    pub(crate) partials: Vec<u32>,
+}
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReductionSpec {
+    pub op: crate::reduction::ReductionOp,
+    pub chunk: u32,
+    pub scratch_binding: u32,
 }

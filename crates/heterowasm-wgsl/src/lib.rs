@@ -16,13 +16,18 @@ pub mod types;
 
 pub use dispatch::decide_dispatch;
 pub use error::LowerError;
-pub use fused::{rewrite_module_fused, rewrite_module_fused_from};
-pub use fusion::{plan_gpu_fusion, plan_gpu_fusion_from, FusionInput};
+pub use fused::{
+    rewrite_module_fused, rewrite_module_fused_from, rewrite_module_fused_reduction_from,
+};
+pub use fusion::{
+    plan_gpu_fusion, plan_gpu_fusion_from, plan_gpu_fusion_reduction_from, FusionInput,
+};
 pub use inject::inject_dispatch_import;
-pub use lower::{lower, lower_with_mode};
+pub use lower::{lower, lower_fused_reduction, lower_reduction, lower_with_mode};
 pub use manifest::artifact;
 pub use plans::{
-    plan_gpu_loops, plan_gpu_loops_with, rewrite_with_plans, LoopPlanSet, OffloadPlan,
+    plan_gpu_loops, plan_gpu_loops_with, plan_gpu_loops_with_options, rewrite_with_plans,
+    LoopPlanSet, OffloadPlan,
 };
 pub use single::{plan_gpu_arity, rewrite_module_for_gpu};
 pub use two_dispatch::rewrite_module_two_dispatches;

@@ -19,6 +19,8 @@ pub(crate) struct RuntimeTrip {
 pub(crate) struct RegionCalls<'a> {
     pub(crate) header_params: &'a [usize],
     pub(crate) explicit: Option<&'a [Value]>,
+
+    pub(crate) entry_values: &'a [(Value, Value)],
     pub(crate) extra: &'a [Vec<Value>],
 
     pub(crate) selector: u32,
@@ -181,7 +183,11 @@ pub(crate) fn offload_region_calls(
                 format!("loop-header parameter {index} has no argument on the predecessor side; cannot supply live-out")
             })?)
         } else {
-            None
+            calls
+                .entry_values
+                .iter()
+                .find(|(value, _)| canonical_value(body, *value) == canonical)
+                .map(|(_, source)| *source)
         };
         if let Some(slot) = slot {
             if let Some(source) = source {

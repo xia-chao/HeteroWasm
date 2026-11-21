@@ -663,6 +663,7 @@ fn dispatch_boundaries_should_write_exactly_the_expected_words() -> TestResult {
             read_slots: Vec::new(),
             write_slots: Vec::new(),
             results: Vec::new(),
+            reduction: None,
         };
 
         let execution = gpu::execute(&kernel, &seed, &[]).map_err(|error| error.to_string())?;
@@ -1608,6 +1609,7 @@ fn artifact_round_trip_through_disk_runs_and_matches_wasm() -> TestResult {
             read_slots: Vec::new(),
             write_slots: Vec::new(),
             results: Vec::new(),
+            reduction: None,
         };
         let compiled = context
             .compile(&restored)
@@ -5816,5 +5818,228 @@ fn f32_numeric_mode_lowers_and_stays_within_contract() -> TestResult {
         worst_ulp <= i64::from(super::F32_ULP_BOUND) * 2,
         "worst ULP distance was {worst_ulp}"
     );
+    Ok(())
+}
+
+
+#[test]
+fn reduction_manifest_declares_the_contract() -> TestResult {
+    let mut kernel = lower_first_loop("integer/constant_base")?;
+    let body_owner = wat::parse_str(
+        r#"(module (memory 1 1) (func (param i32) (i32.store (i32.const 0) (local.get 0))))"#,
+    )?;
+    let mut module = load_module(&body_owner, &Trace::silent())?;
+    expand_all_bodies(&mut module, &Trace::silent())?;
+    let FuncDecl::Body(_, _, body) = module
+        .funcs
+        .values()
+        .find(|decl| matches!(decl, FuncDecl::Body(..)))
+        .ok_or("no function body")?
+    else {
+        return Err("no function body".into());
+    };
+    let plain = super::artifact(&kernel, body)?;
+    assert!(
+        !plain.manifest.contains("reduction_op"),
+        "exact kernels must not carry reduction fields"
+    );
+
+    kernel.reduction = Some(super::ReductionPlan {
+        op: super::KernelReductionOp::Add,
+        chunk: 64,
+    });
+    let manifest = super::artifact(&kernel, body)?.manifest;
+    for needle in [
+        "\"reduction_op\": \"add\"",
+        "\"reduction_chunk\": 64",
+        "\"scratch_binding\": 3",
+    ] {
+        assert!(manifest.contains(needle), "manifest missing {needle}");
+    }
+    Ok(())
+}
+
+
+fn lower_reduction_first_loop(
+    bytes: &[u8],
+) -> Result<(Kernel, String), Box<dyn std::error::Error>> {
+    let mut module = load_module(bytes, &Trace::silent())?;
+    expand_all_bodies(&mut module, &Trace::silent())?;
+    for decl in module.funcs.values() {
+        let FuncDecl::Body(_, _, body) = decl else {
+            continue;
+        };
+        let trace = Trace::silent();
+        let flow = ControlFlow::analyze(body, &trace);
+        for natural_loop in flow.natural_loops(body, &trace) {
+            let evolution = ScalarEvolution::analyze(body, &natural_loop, &trace);
+            let Some(reduction) =
+                heterowasm_legality::reduction::recognize(body, &natural_loop, &evolution)
+            else {
+                continue;
+            };
+            let kernel =
+                super::lower_reduction(body, &natural_loop, &evolution, &reduction, 64, &trace)?;
+            let manifest = super::artifact(&kernel, body)?.manifest;
+            return Ok((kernel, manifest));
+        }
+    }
+    Err("no recognized reduction loop".into())
+}
+
+
+#[test]
+fn reduction_emitter_writes_the_two_phase_kernel() -> TestResult {
+    let source = r#"(module
+      (memory (export "mem") 16)
+      (func (export "main") (param $out i32) (param $in i32) (param $n i32)
+        (local $i i32) (local $s i32)
+        (block $e
+          (loop $l
+            (br_if $e (i32.ge_s (local.get $i) (local.get $n)))
+            (local.set $s
+              (i32.add (local.get $s)
+                (i32.load (i32.add (local.get $in) (i32.mul (local.get $i) (i32.const 4))))))
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $l)))
+        (i32.store (local.get $out) (local.get $s))
+      )
+    )"#;
+    let bytes = wat::parse_str(source)?;
+    let (kernel, manifest) = lower_reduction_first_loop(&bytes)?;
+    assert_eq!(
+        kernel.reduction,
+        Some(super::ReductionPlan {
+            op: super::KernelReductionOp::Add,
+            chunk: 64,
+        })
+    );
+    assert!(
+        matches!(kernel.dispatch, Dispatch::FromField(0)),
+        "trip must come from the first uniform field"
+    );
+    for needle in [
+        "@binding(3) var<storage, read_write> scratch : array<u32>;",
+        "let begin : u32 = gid.x * 64u;",
+        "for (var k : u32 = begin; k < end; k = k + 1u)",
+        "acc = acc + mem[params.p1 / 4u + k];",
+        "scratch[gid.x] = acc;",
+    ] {
+        assert!(kernel.source.contains(needle), "kernel missing {needle}");
+    }
+    for needle in [
+        "\"reduction_op\": \"add\"",
+        "\"reduction_chunk\": 64",
+        "\"scratch_binding\": 3",
+        "\"result_slots\": 1",
+    ] {
+        assert!(manifest.contains(needle), "manifest missing {needle}");
+    }
+    Ok(())
+}
+
+
+fn lower_fused_reduction_first_pair(
+    bytes: &[u8],
+) -> Result<(Kernel, String), Box<dyn std::error::Error>> {
+    let mut module = load_module(bytes, &Trace::silent())?;
+    expand_all_bodies(&mut module, &Trace::silent())?;
+    for decl in module.funcs.values() {
+        let FuncDecl::Body(_, _, body) = decl else {
+            continue;
+        };
+        let trace = Trace::silent();
+        let flow = ControlFlow::analyze(body, &trace);
+        let loops = flow.natural_loops(body, &trace);
+        let mut analysed = Vec::new();
+        for natural_loop in &loops {
+            let evolution = ScalarEvolution::analyze(body, natural_loop, &trace);
+            let recovery =
+                AddressRecovery::analyze_loop(body, &evolution, &natural_loop.blocks, &trace);
+            analysed.push((
+                natural_loop.clone(),
+                evolution,
+                recovery.accesses().to_vec(),
+            ));
+        }
+        for (producer_index, (producer, producer_evolution, producer_accesses)) in
+            analysed.iter().enumerate()
+        {
+            if !producer_accesses
+                .iter()
+                .any(|access| access.kind == heterowasm_address::AccessKind::Store)
+            {
+                continue;
+            }
+            for (consumer, consumer_evolution, _) in analysed.iter().skip(producer_index + 1) {
+                let Some(reduction) =
+                    heterowasm_legality::reduction::recognize(body, consumer, consumer_evolution)
+                else {
+                    continue;
+                };
+                let kernel = super::lower_fused_reduction(
+                    body,
+                    producer,
+                    producer_evolution,
+                    producer_accesses,
+                    consumer,
+                    consumer_evolution,
+                    &reduction,
+                    64,
+                    &trace,
+                )?;
+                let manifest = super::artifact(&kernel, body)?.manifest;
+                return Ok((kernel, manifest));
+            }
+        }
+    }
+    Err("no producer/reduction loop pair".into())
+}
+
+
+#[test]
+fn fused_reduction_emitter_keeps_the_value_in_registers() -> TestResult {
+    let source = r#"(module
+      (memory (export "mem") 16)
+      (func (export "main") (param $a i32) (param $x i32) (param $so i32) (param $n i32)
+        (local $i i32) (local $s i32)
+        (block $e1 (loop $l1
+          (br_if $e1 (i32.ge_s (local.get $i) (local.get $n)))
+          (i32.store (i32.add (local.get $a) (i32.mul (local.get $i) (i32.const 4)))
+            (i32.add
+              (i32.mul (i32.load (i32.add (local.get $x) (i32.mul (local.get $i) (i32.const 4)))) (i32.const 3))
+              (i32.const 1)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $l1)))
+        (local.set $i (i32.const 0))
+        (local.set $s (i32.const 0))
+        (block $e2 (loop $l2
+          (br_if $e2 (i32.ge_s (local.get $i) (local.get $n)))
+          (local.set $s (i32.add (local.get $s)
+            (i32.load (i32.add (local.get $a) (i32.mul (local.get $i) (i32.const 4))))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $l2)))
+        (i32.store (local.get $so) (local.get $s))))"#;
+    let bytes = wat::parse_str(source)?;
+    let (kernel, manifest) = lower_fused_reduction_first_pair(&bytes)?;
+    assert_eq!(
+        kernel.reduction,
+        Some(super::ReductionPlan {
+            op: super::KernelReductionOp::Add,
+            chunk: 64,
+        })
+    );
+    for needle in [
+        "let v = ",
+        "mem[params.p",
+        " = v;",
+        "acc = acc + v;",
+        "scratch[gid.x] = acc;",
+    ] {
+        assert!(kernel.source.contains(needle), "kernel missing {needle}");
+    }
+    for needle in ["\"reduction_op\": \"add\"", "\"reduction_chunk\": 64"] {
+        assert!(manifest.contains(needle), "manifest missing {needle}");
+    }
     Ok(())
 }

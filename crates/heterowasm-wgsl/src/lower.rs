@@ -719,6 +719,7 @@ pub fn lower_with_mode(
         },
         launch_count,
         results,
+        reduction: None,
     };
 
     trace
@@ -921,7 +922,8 @@ fn word_index(
     let stride_words = normalized.stride / 4;
     if stride_words != 0 {
 
-        let trip = if normalized.initial_in_base {
+
+        let trip = if normalized.initial_in_base || emitter.trip != "gid.x" {
             emitter.trip.clone()
         } else {
             "i".to_string()
@@ -1785,4 +1787,611 @@ fn guard(dispatch: Dispatch, step: i64, start: &Option<StartOffset>, inclusive: 
         Some(offset) => format!("{} + {step}u * batch", offset.text()),
     };
     format!("  if ({cursor} {comparison} {bound}) {{\n    return;\n  }}\n")
+}
+
+
+pub fn lower_reduction(
+    body: &FunctionBody,
+    natural_loop: &NaturalLoop,
+    evolution: &ScalarEvolution,
+    reduction: &heterowasm_legality::reduction::Reduction,
+    workgroup_size: u32,
+    trace: &Trace,
+) -> Result<Kernel, LowerError> {
+    let _scope = trace.stage(Stage::Wgsl, "reduction loop");
+    let members: HashSet<Block> = natural_loop.blocks.iter().copied().collect();
+    let mut emitter = Emitter {
+        fields: Vec::new(),
+        statements: Vec::new(),
+        min_constant_bytes: 0,
+        max_constant_bytes: 0,
+        max_stride_bytes: 0,
+        trip: "k".to_string(),
+        read_slots: BTreeSet::new(),
+        write_slots: BTreeSet::new(),
+        numeric: crate::types::NumericMode::Exact,
+    };
+
+    let induction = evolution
+        .induction_variables()
+        .iter()
+        .find(|variable| {
+            variable.step == 1
+                && constant_value(body, canonical_value(body, variable.initial)) == Some(0)
+        })
+        .ok_or(LowerError::UnsupportedValueKind)?;
+    let is_induction =
+        |value: Value| canonical_value(body, value) == canonical_value(body, induction.value);
+
+    let position = body
+        .blocks
+        .get(natural_loop.header)
+        .and_then(|header| {
+            header.params.iter().position(|(_, value)| {
+                canonical_value(body, *value) == canonical_value(body, reduction.accumulator)
+            })
+        })
+        .ok_or(LowerError::UnsupportedValueKind)?;
+    let mut initial = None;
+    for (block, definition) in body.blocks.entries() {
+        if members.contains(&block) {
+            continue;
+        }
+        let mut link = None;
+        match &definition.terminator {
+            waffle::Terminator::Br { target } => link = Some(target),
+            waffle::Terminator::CondBr {
+                if_true, if_false, ..
+            } => {
+                for target in [if_true, if_false] {
+                    if target.block == natural_loop.header {
+                        link = Some(target);
+                    }
+                }
+            }
+            _ => {}
+        }
+        let Some(target) = link else {
+            continue;
+        };
+        if target.block != natural_loop.header {
+            continue;
+        }
+        let Some(value) = target.args.get(position) else {
+            continue;
+        };
+        if let Some(previous) = initial {
+            if canonical_value(body, previous) != canonical_value(body, *value) {
+                return Err(LowerError::UnsupportedValueKind);
+            }
+        }
+        initial = Some(*value);
+    }
+    let initial = initial.ok_or(LowerError::UnsupportedValueKind)?;
+    if constant_value(body, canonical_value(body, initial)) != Some(0) {
+        return Err(LowerError::UnsupportedValueKind);
+    }
+
+
+    let mut trip = None;
+    for &block in &natural_loop.blocks {
+        let Some(definition) = body.blocks.get(block) else {
+            continue;
+        };
+        let waffle::Terminator::CondBr {
+            cond,
+            if_true,
+            if_false,
+        } = &definition.terminator
+        else {
+            continue;
+        };
+        let leaves = |target: &waffle::BlockTarget| !members.contains(&target.block);
+
+        if !((leaves(if_true) && !leaves(if_false)) || (!leaves(if_true) && leaves(if_false))) {
+            continue;
+        }
+        let Some(ValueDef::Operator(operator, args, _)) =
+            body.values.get(canonical_value(body, *cond))
+        else {
+            continue;
+        };
+        let operands: &[Value] = &body.arg_pool[*args];
+        let left = *operands.first().ok_or(LowerError::MissingOperand)?;
+        let right = *operands.get(1).ok_or(LowerError::MissingOperand)?;
+        if !is_induction(left) {
+            continue;
+        }
+        match operator {
+            Operator::I32LtS | Operator::I32LtU | Operator::I32GeS | Operator::I32GeU => {
+                trip = Some(right);
+                break;
+            }
+            _ => continue,
+        }
+    }
+    let trip = trip.ok_or(LowerError::UnsupportedValueKind)?;
+    let trip_field = if let Some(constant) = constant_value(body, canonical_value(body, trip)) {
+        let count = u32::try_from(constant).map_err(|_| LowerError::LimitTooLarge)?;
+        Some(Dispatch::Fixed(count))
+    } else {
+        let slot = field_of(body, trip, evolution, &members, &mut emitter)?;
+        Some(Dispatch::FromField(slot))
+    };
+    let dispatch = trip_field.ok_or(LowerError::UnsupportedValueKind)?;
+
+
+    let Some(ValueDef::Operator(update_operator, update_args, _)) =
+        body.values.get(canonical_value(body, reduction.update))
+    else {
+        return Err(LowerError::UnsupportedValueKind);
+    };
+    let expected_operator = match reduction.op {
+        heterowasm_legality::reduction::ReductionOp::Add => Operator::I32Add,
+        heterowasm_legality::reduction::ReductionOp::And => Operator::I32And,
+        heterowasm_legality::reduction::ReductionOp::Or => Operator::I32Or,
+        heterowasm_legality::reduction::ReductionOp::Xor => Operator::I32Xor,
+    };
+    if *update_operator != expected_operator {
+        return Err(LowerError::UnsupportedValueKind);
+    }
+    let update_operands: &[Value] = &body.arg_pool[*update_args];
+    let accumulator = canonical_value(body, reduction.accumulator);
+    let addend = if canonical_value(
+        body,
+        *update_operands.first().ok_or(LowerError::MissingOperand)?,
+    ) == accumulator
+    {
+        *update_operands.get(1).ok_or(LowerError::MissingOperand)?
+    } else {
+        *update_operands.first().ok_or(LowerError::MissingOperand)?
+    };
+    let Some(ValueDef::Operator(Operator::I32Load { memory }, load_args, _)) =
+        body.values.get(canonical_value(body, addend))
+    else {
+        return Err(LowerError::UnsupportedValueKind);
+    };
+    let load_operands: &[Value] = &body.arg_pool[*load_args];
+    let address = *load_operands.first().ok_or(LowerError::MissingOperand)?;
+    let form =
+        AddressRecovery::form_of(body, evolution, address).ok_or(LowerError::UnsupportedBase)?;
+    let normalized = NormalizedAddress::of(&form, i64::from(memory.offset), evolution)
+        .ok_or(LowerError::UnsupportedBase)?;
+    if normalized.stride != 4
+        || normalized.offset != 0
+        || normalized.base.len() != 1
+        || normalized.base[0].1 != 1
+    {
+        return Err(LowerError::UnsupportedBase);
+    }
+    let base_slot = field_of(
+        body,
+        normalized.base[0].0,
+        evolution,
+        &members,
+        &mut emitter,
+    )?;
+
+    const CHUNK: u32 = 64;
+    let params: String = (0..emitter.fields.len())
+        .map(|slot| format!("  p{slot} : u32,\n"))
+        .collect();
+    let trip_expression = match dispatch {
+        Dispatch::Fixed(count) => format!("{count}u"),
+        Dispatch::FromField(slot) => format!("params.p{slot}"),
+        _ => return Err(LowerError::UnsupportedValueKind),
+    };
+    let operator = match reduction.op {
+        heterowasm_legality::reduction::ReductionOp::Add => "+",
+        heterowasm_legality::reduction::ReductionOp::And => "&",
+        heterowasm_legality::reduction::ReductionOp::Or => "|",
+        heterowasm_legality::reduction::ReductionOp::Xor => "^",
+    };
+    let source = format!(
+        "struct Params {{\n{params}}};\n\n@group(0) @binding(0) var<storage, read_write> mem : array<u32>;\n@group(0) @binding(1) var<uniform> params : Params;\n@group(0) @binding(2) var<storage, read_write> results : array<u32>;\n@group(0) @binding(3) var<storage, read_write> scratch : array<u32>;\n\n@compute @workgroup_size({workgroup_size})\nfn main(@builtin(global_invocation_id) gid : vec3<u32>) {{\n  let trip : u32 = {trip_expression};\n  let begin : u32 = gid.x * {CHUNK}u;\n  if (begin >= trip) {{\n    return;\n  }}\n  let end : u32 = min(begin + {CHUNK}u, trip);\n  var acc : u32 = 0u;\n  for (var k : u32 = begin; k < end; k = k + 1u) {{\n    acc = acc {operator} mem[params.p{base_slot} / 4u + k];\n  }}\n  scratch[gid.x] = acc;\n}}\n"
+    );
+    let kernel = Kernel {
+        source,
+        workgroup_size,
+        dispatch,
+        fields: emitter.fields.clone(),
+        min_constant_bytes: 0,
+        max_constant_bytes: 0,
+        max_stride_bytes: 4,
+        read_slots: vec![base_slot],
+
+        write_slots: Vec::new(),
+        index_field: None,
+        launch_count: None,
+
+        results: {
+            let header = natural_loop.header;
+            vec!["0u".to_string(); reduction_result_count(body, header, &members, evolution)]
+        },
+        reduction: Some(crate::types::ReductionPlan {
+            op: match reduction.op {
+                heterowasm_legality::reduction::ReductionOp::Add => {
+                    crate::types::KernelReductionOp::Add
+                }
+                heterowasm_legality::reduction::ReductionOp::And => {
+                    crate::types::KernelReductionOp::And
+                }
+                heterowasm_legality::reduction::ReductionOp::Or => {
+                    crate::types::KernelReductionOp::Or
+                }
+                heterowasm_legality::reduction::ReductionOp::Xor => {
+                    crate::types::KernelReductionOp::Xor
+                }
+            },
+            chunk: CHUNK,
+        }),
+    };
+    trace
+        .info(Stage::Wgsl, "reduction kernel emit complete")
+        .field(
+            "chunk",
+            usize::try_from(CHUNK).map_err(|_| LowerError::LimitTooLarge)?,
+        )
+        .field("uniform_fields", kernel.fields.len())
+        .emit();
+    Ok(kernel)
+}
+
+
+fn reduction_result_count(
+    body: &FunctionBody,
+    header: Block,
+    members: &HashSet<Block>,
+    evolution: &ScalarEvolution,
+) -> usize {
+    crate::live_out::live_outs(body, members)
+        .iter()
+        .filter(|value| !crate::live_out::is_pass_through(body, header, members, **value))
+        .filter(|value| {
+            !evolution
+                .invariant_parameters()
+                .contains(&canonical_value(body, **value))
+        })
+        .count()
+}
+
+
+fn constant_through_block_params(body: &FunctionBody, value: Value) -> Option<i64> {
+    let mut current = canonical_value(body, value);
+    let mut seen = HashSet::new();
+    for _ in 0..64 {
+        if let Some(constant) = constant_value(body, current) {
+            return Some(constant);
+        }
+        if !seen.insert(current) {
+            return None;
+        }
+        let Some(ValueDef::BlockParam(block, position, _)) = body.values.get(current) else {
+            return None;
+        };
+        let mut incoming: Option<Value> = None;
+        for (_, definition) in body.blocks.entries() {
+            let arguments = match &definition.terminator {
+                waffle::Terminator::Br { target } if target.block == *block => {
+                    target.args.as_slice()
+                }
+                waffle::Terminator::CondBr {
+                    if_true, if_false, ..
+                } => {
+                    if if_true.block == *block {
+                        if_true.args.as_slice()
+                    } else if if_false.block == *block {
+                        if_false.args.as_slice()
+                    } else {
+                        continue;
+                    }
+                }
+                _ => continue,
+            };
+            let argument = *arguments.get(usize::try_from(*position).ok()?)?;
+            match incoming {
+                None => incoming = Some(argument),
+                Some(previous)
+                    if canonical_value(body, previous) == canonical_value(body, argument) => {}
+                Some(_) => return None,
+            }
+        }
+        current = canonical_value(body, incoming?);
+    }
+    None
+}
+
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "producer and consumer each need their own loop/evolution context; hiding them would blur provenance"
+)]
+pub fn lower_fused_reduction(
+    body: &FunctionBody,
+    producer: &NaturalLoop,
+    producer_evolution: &ScalarEvolution,
+    producer_accesses: &[MemoryAccess],
+    consumer: &NaturalLoop,
+    consumer_evolution: &ScalarEvolution,
+    reduction: &heterowasm_legality::reduction::Reduction,
+    workgroup_size: u32,
+    trace: &Trace,
+) -> Result<Kernel, LowerError> {
+    let _scope = trace.stage(Stage::Wgsl, "fused reduction loop");
+
+    let producer_extent = LoopExtent::analyze(body, producer, producer_evolution);
+    let consumer_extent = LoopExtent::analyze(body, consumer, consumer_evolution);
+    if !crate::fusion::same_iteration_space(body, &producer_extent, &consumer_extent) {
+        return Err(LowerError::UnsupportedValueKind);
+    }
+
+    let producer_members: HashSet<Block> = producer.blocks.iter().copied().collect();
+    let consumer_members: HashSet<Block> = consumer.blocks.iter().copied().collect();
+    let mut region_members = producer_members.clone();
+    for block in &consumer_members {
+        if !region_members.contains(block) {
+            region_members.insert(*block);
+        }
+    }
+    let mut emitter = Emitter {
+        fields: Vec::new(),
+        statements: Vec::new(),
+        min_constant_bytes: 0,
+        max_constant_bytes: 0,
+        max_stride_bytes: 0,
+        trip: "k".to_string(),
+        read_slots: BTreeSet::new(),
+        write_slots: BTreeSet::new(),
+        numeric: crate::types::NumericMode::Exact,
+    };
+
+
+    let mut stores = producer_accesses
+        .iter()
+        .filter(|access| access.kind == AccessKind::Store);
+    let store = stores.next().ok_or(LowerError::NothingToEmit)?;
+    if stores.next().is_some() {
+        return Err(LowerError::UnsupportedValueKind);
+    }
+    let store_normalized = store
+        .normalized(producer_evolution)
+        .ok_or(LowerError::UnsupportedBase)?;
+    if store_normalized.stride != 4
+        || store_normalized.offset != 0
+        || store_normalized.base.len() != 1
+        || store_normalized.base[0].1 != 1
+    {
+        return Err(LowerError::UnsupportedBase);
+    }
+    let out_slot = field_of(
+        body,
+        store_normalized.base[0].0,
+        producer_evolution,
+        &producer_members,
+        &mut emitter,
+    )?;
+    let (stored, stored_kind) = stored_operand(body, store.value)?;
+    if stored_kind != ScalarKind::I32 {
+        return Err(LowerError::UnsupportedValueKind);
+    }
+    let value = value_expression(
+        body,
+        stored,
+        producer_evolution,
+        &producer_members,
+        &mut emitter,
+        256,
+    )?;
+    if value.kind != ScalarKind::I32 {
+        return Err(LowerError::UnsupportedValueKind);
+    }
+
+
+    let accumulator = canonical_value(body, reduction.accumulator);
+    let update_definition = body
+        .values
+        .get(canonical_value(body, reduction.update))
+        .ok_or(LowerError::MissingValueDefinition)?;
+    let ValueDef::Operator(_, update_args, _) = update_definition else {
+        return Err(LowerError::UnsupportedValueKind);
+    };
+    let update_operands: &[Value] = &body.arg_pool[*update_args];
+    let addend = if canonical_value(
+        body,
+        *update_operands.first().ok_or(LowerError::MissingOperand)?,
+    ) == accumulator
+    {
+        *update_operands.get(1).ok_or(LowerError::MissingOperand)?
+    } else {
+        *update_operands.first().ok_or(LowerError::MissingOperand)?
+    };
+    let ValueDef::Operator(Operator::I32Load { memory }, load_args, _) = body
+        .values
+        .get(canonical_value(body, addend))
+        .ok_or(LowerError::MissingValueDefinition)?
+    else {
+        return Err(LowerError::UnsupportedValueKind);
+    };
+    let load_operands: &[Value] = &body.arg_pool[*load_args];
+    let address = *load_operands.first().ok_or(LowerError::MissingOperand)?;
+    let load_form = AddressRecovery::form_of(body, consumer_evolution, address)
+        .ok_or(LowerError::UnsupportedBase)?;
+    let load_normalized =
+        NormalizedAddress::of(&load_form, i64::from(memory.offset), consumer_evolution)
+            .ok_or(LowerError::UnsupportedBase)?;
+
+    if load_normalized.base.len() != 1
+        || load_normalized.base[0].1 != 1
+        || store_normalized.base.len() != 1
+    {
+        return Err(LowerError::UnsupportedBase);
+    }
+    let base_parameter = |value: Value| {
+        crate::conformance::field_mapping(body, &[value])
+            .and_then(|mapping| mapping.first().copied())
+    };
+    let same_address = load_normalized.stride == store_normalized.stride
+        && load_normalized.offset == store_normalized.offset
+        && base_parameter(load_normalized.base[0].0).is_some()
+        && base_parameter(load_normalized.base[0].0) == base_parameter(store_normalized.base[0].0);
+    if !same_address {
+        return Err(LowerError::UnsupportedValueKind);
+    }
+
+    let consumer_header = body
+        .blocks
+        .get(consumer.header)
+        .ok_or(LowerError::UnsupportedValueKind)?;
+    let position = consumer_header
+        .params
+        .iter()
+        .position(|(_, value)| canonical_value(body, *value) == accumulator)
+        .ok_or(LowerError::UnsupportedValueKind)?;
+    let mut initial = None;
+    for (block, definition) in body.blocks.entries() {
+        if consumer_members.contains(&block) {
+            continue;
+        }
+        let link = match &definition.terminator {
+            waffle::Terminator::Br { target } if target.block == consumer.header => Some(target),
+            waffle::Terminator::CondBr {
+                if_true, if_false, ..
+            } => [if_true, if_false]
+                .into_iter()
+                .find(|target| target.block == consumer.header),
+            _ => None,
+        };
+        let Some(target) = link else { continue };
+        if let Some(value) = target.args.get(position) {
+            initial = Some(*value);
+        }
+    }
+    let initial = initial.ok_or(LowerError::UnsupportedValueKind)?;
+    if constant_through_block_params(body, initial) != Some(0) {
+        return Err(LowerError::UnsupportedValueKind);
+    }
+
+
+    let is_induction = |value: Value| {
+        consumer_evolution
+            .induction_variables()
+            .iter()
+            .any(|variable| canonical_value(body, variable.value) == canonical_value(body, value))
+    };
+    let mut trip = None;
+    for &block in &consumer.blocks {
+        let Some(definition) = body.blocks.get(block) else {
+            continue;
+        };
+        let waffle::Terminator::CondBr {
+            cond,
+            if_true,
+            if_false,
+        } = &definition.terminator
+        else {
+            continue;
+        };
+        let leaves = |target: &waffle::BlockTarget| !consumer_members.contains(&target.block);
+        if !((leaves(if_true) && !leaves(if_false)) || (!leaves(if_true) && leaves(if_false))) {
+            continue;
+        }
+        let Some(ValueDef::Operator(operator, args, _)) =
+            body.values.get(canonical_value(body, *cond))
+        else {
+            continue;
+        };
+        let operands: &[Value] = &body.arg_pool[*args];
+        let left = *operands.first().ok_or(LowerError::MissingOperand)?;
+        let right = *operands.get(1).ok_or(LowerError::MissingOperand)?;
+        if !is_induction(left) {
+            continue;
+        }
+        match operator {
+            Operator::I32LtS | Operator::I32LtU | Operator::I32GeS | Operator::I32GeU => {
+                trip = Some(right);
+                break;
+            }
+            _ => continue,
+        }
+    }
+    let trip = trip.ok_or(LowerError::UnsupportedValueKind)?;
+    let dispatch = if let Some(constant) = constant_value(body, canonical_value(body, trip)) {
+        Dispatch::Fixed(u32::try_from(constant).map_err(|_| LowerError::LimitTooLarge)?)
+    } else {
+        Dispatch::FromField(field_of(
+            body,
+            trip,
+            consumer_evolution,
+            &consumer_members,
+            &mut emitter,
+        )?)
+    };
+
+    const CHUNK: u32 = 64;
+    let params: String = (0..emitter.fields.len())
+        .map(|slot| format!("  p{slot} : u32,\n"))
+        .collect();
+    let trip_expression = match dispatch {
+        Dispatch::Fixed(count) => format!("{count}u"),
+        Dispatch::FromField(slot) => format!("params.p{slot}"),
+        _ => return Err(LowerError::UnsupportedValueKind),
+    };
+    let operator = match reduction.op {
+        heterowasm_legality::reduction::ReductionOp::Add => "+",
+        heterowasm_legality::reduction::ReductionOp::And => "&",
+        heterowasm_legality::reduction::ReductionOp::Or => "|",
+        heterowasm_legality::reduction::ReductionOp::Xor => "^",
+    };
+    let value_text = &value.text;
+    let source = format!(
+        "struct Params {{\n{params}}};\n\n@group(0) @binding(0) var<storage, read_write> mem : array<u32>;\n@group(0) @binding(1) var<uniform> params : Params;\n@group(0) @binding(2) var<storage, read_write> results : array<u32>;\n@group(0) @binding(3) var<storage, read_write> scratch : array<u32>;\n\n@compute @workgroup_size({workgroup_size})\nfn main(@builtin(global_invocation_id) gid : vec3<u32>) {{\n  let trip : u32 = {trip_expression};\n  let begin : u32 = gid.x * {CHUNK}u;\n  if (begin >= trip) {{\n    return;\n  }}\n  let end : u32 = min(begin + {CHUNK}u, trip);\n  var acc : u32 = 0u;\n  for (var k : u32 = begin; k < end; k = k + 1u) {{\n    let v = {value_text};\n    mem[params.p{out_slot} / 4u + k] = v;\n    acc = acc {operator} v;\n  }}\n  scratch[gid.x] = acc;\n}}\n"
+    );
+    let kernel = Kernel {
+        source,
+        workgroup_size,
+        dispatch,
+        fields: emitter.fields.clone(),
+        min_constant_bytes: 0,
+        max_constant_bytes: 0,
+        max_stride_bytes: 4,
+        read_slots: emitter.read_slots.iter().copied().collect(),
+        write_slots: vec![out_slot],
+        index_field: None,
+        launch_count: None,
+        results: vec![
+            "0u".to_string();
+            reduction_result_count(
+                body,
+                producer.header,
+                &region_members,
+                consumer_evolution,
+            )
+        ],
+        reduction: Some(crate::types::ReductionPlan {
+            op: match reduction.op {
+                heterowasm_legality::reduction::ReductionOp::Add => {
+                    crate::types::KernelReductionOp::Add
+                }
+                heterowasm_legality::reduction::ReductionOp::And => {
+                    crate::types::KernelReductionOp::And
+                }
+                heterowasm_legality::reduction::ReductionOp::Or => {
+                    crate::types::KernelReductionOp::Or
+                }
+                heterowasm_legality::reduction::ReductionOp::Xor => {
+                    crate::types::KernelReductionOp::Xor
+                }
+            },
+            chunk: CHUNK,
+        }),
+    };
+    trace
+        .info(Stage::Wgsl, "fused reduction kernel emit complete")
+        .field(
+            "chunk",
+            usize::try_from(CHUNK).map_err(|_| LowerError::LimitTooLarge)?,
+        )
+        .field("uniform_fields", kernel.fields.len())
+        .emit();
+    Ok(kernel)
 }

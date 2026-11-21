@@ -89,6 +89,26 @@ pub(crate) fn parse_kernel(
     };
     let fields_resolved = flag_after(text, "fields_resolved");
     let numeric = flag_after(text, "numeric");
+    let reduction = match string_after(text, "reduction_op") {
+        Some(name) => {
+            let op = crate::reduction::ReductionOp::parse(&name)
+                .ok_or_else(|| bad(format!("unknown reduction operator {name}")))?;
+            let chunk = number_after(text, "reduction_chunk")
+                .ok_or_else(|| bad("reduction_chunk not found".into()))?;
+            let chunk = u32::try_from(chunk)
+                .map_err(|_| bad(format!("reduction_chunk out of range: {chunk}")))?;
+            let scratch_binding = number_after(text, "scratch_binding")
+                .ok_or_else(|| bad("scratch_binding not found".into()))?;
+            let scratch_binding = u32::try_from(scratch_binding)
+                .map_err(|_| bad(format!("scratch_binding out of range: {scratch_binding}")))?;
+            Some(crate::types::ReductionSpec {
+                op,
+                chunk,
+                scratch_binding,
+            })
+        }
+        None => None,
+    };
 
     let read_slots = array_after(text, "read_slots")
         .map(|list| {
@@ -116,6 +136,7 @@ pub(crate) fn parse_kernel(
         fields,
         fields_resolved,
         numeric,
+        reduction,
         result_slots: usize::try_from(result_slots)
             .map_err(|_| bad("result_slots out of range".into()))?,
         min_offset_bytes,

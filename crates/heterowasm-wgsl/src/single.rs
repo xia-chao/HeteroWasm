@@ -128,6 +128,7 @@ pub(crate) fn offload_loop(
         members,
         RegionCalls {
             header_params: &[],
+            entry_values: &[],
             explicit: Some(&explicit),
             extra: &[],
             selector,
