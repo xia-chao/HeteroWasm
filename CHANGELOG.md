@@ -2,6 +2,10 @@
 
 ## 0.2.0 (2026-11-21)
 
+- f32 numeric mode now has its own cost gate: a numeric kernel needs more than 63
+  shader multiplies before it is offloaded. Measuring on the M2 gave 1.02x slower at 32
+  multiplies (n=65536), 2.25x faster at 64 and 4.47x at 128; at n=262144, 32 multiplies
+  already wins 1.27x, but a static gate cannot see the runtime trip count.
 - Optional `f32` numeric mode (`compile --numeric`, spec §14): `f32` loads/stores are
   emitted with `bitcast` and `f32` add/sub/mul are lowered under a numeric contract
   (ULP <= 4, or relative/absolute error <= 1e-6; non-finite values must match bitwise).
