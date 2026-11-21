@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- CI and local development now pin one compiler (`rust-toolchain.toml`, 1.98.1, the
+  workspace minimum). On a newer `stable` the thin binary's `unused_crate_dependencies`
+  expectation becomes unfulfilled and `-D warnings` fails, so the hosted runner and the
+  developer machine have to agree on the toolchain.
+- CI installs a software Vulkan driver (lavapipe) so the GPU correctness tests run on hosted
+  runners instead of failing for the lack of an adapter; only the five benchmark-style
+  comparisons are skipped there, because a software device says nothing about GPU/CPU speed.
 - The wgpu dependency now enables the Vulkan backend alongside Metal. A metal-only build has
   no graphics backend at all on Linux: creating an instance panics and the released Linux
   binary could not use the GPU. With Vulkan enabled the Linux build can reach the device.
