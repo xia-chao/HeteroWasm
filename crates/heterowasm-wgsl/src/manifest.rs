@@ -86,6 +86,16 @@ pub fn artifact<'a>(kernel: &'a Kernel, body: &FunctionBody) -> Result<Artifact<
         kernel.results.len(),
         mapping.is_some()
     );
+
+    let manifest = if kernel.uses_f32() {
+        manifest.replacen(
+            "  \"fields_resolved\":",
+            "  \"numeric\": true,\n  \"fields_resolved\":",
+            1,
+        )
+    } else {
+        manifest
+    };
     Ok(Artifact {
         wgsl: &kernel.source,
         manifest,

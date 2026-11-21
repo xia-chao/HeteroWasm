@@ -2,6 +2,8 @@
 
 ## 0.2.0 (2026-11-21)
 
+- Numeric kernels carry `"numeric": true` in their kernel manifest so the runtime can
+  later apply the ULP/atol verification contract; exact artifacts keep the previous bytes.
 - f32 numeric mode now has its own cost gate: a numeric kernel needs more than 63
   shader multiplies before it is offloaded. Measuring on the M2 gave 1.02x slower at 32
   multiplies (n=65536), 2.25x faster at 64 and 4.47x at 128; at n=262144, 32 multiplies

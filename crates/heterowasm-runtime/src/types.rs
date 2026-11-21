@@ -80,6 +80,8 @@ pub struct KernelSpec {
 
     pub fields_resolved: bool,
 
+    pub numeric: bool,
+
     pub result_slots: usize,
 
     pub min_offset_bytes: i64,
