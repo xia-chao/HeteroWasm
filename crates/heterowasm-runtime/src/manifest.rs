@@ -88,6 +88,7 @@ pub(crate) fn parse_kernel(
         None => Vec::new(),
     };
     let fields_resolved = flag_after(text, "fields_resolved");
+    let numeric = flag_after(text, "numeric");
 
     let read_slots = array_after(text, "read_slots")
         .map(|list| {
@@ -114,6 +115,7 @@ pub(crate) fn parse_kernel(
             .map_err(|_| bad("uniform_size out of range".into()))?,
         fields,
         fields_resolved,
+        numeric,
         result_slots: usize::try_from(result_slots)
             .map_err(|_| bad("result_slots out of range".into()))?,
         min_offset_bytes,
