@@ -22,6 +22,14 @@ mod benchmark {
         matched: bool,
 
         mismatch_at: Option<usize>,
+
+        numeric_checked: bool,
+
+        numeric_violations: usize,
+
+        numeric_max_relative: f32,
+
+        numeric_first_violation: Option<usize>,
     }
 
 
@@ -133,14 +141,26 @@ mod benchmark {
         let gpu = time_gpu(&mut runtime, entry, &wasm_args, repeat, &gpu_initial)?;
         let dispatches = runtime.dispatches();
 
+        let matched = cpu_memory == gpu_memory;
+        let numeric_checked = has_numeric_kernel(dir);
+        let (numeric_violations, numeric_max_relative, numeric_first_violation) =
+            if numeric_checked && !matched {
+                numeric_contract(&cpu_memory, &gpu_memory)
+            } else {
+                (0, 0.0, None)
+            };
         let measurement = Measurement {
             adapter: runtime.adapter().to_string(),
             dispatches,
             timed_dispatches: dispatches - dispatches_before_timing,
             cpu,
             gpu,
-            matched: cpu_memory == gpu_memory,
+            matched,
             mismatch_at: first_mismatch(&cpu_memory, &gpu_memory),
+            numeric_checked,
+            numeric_violations,
+            numeric_max_relative,
+            numeric_first_violation,
         };
         report(&measurement, dir, entry, repeat);
         Ok(())
@@ -194,6 +214,21 @@ mod benchmark {
     }
 
 
+    fn has_numeric_kernel(dir: &Path) -> bool {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        entries.flatten().any(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                return false;
+            }
+            std::fs::read_to_string(&path)
+                .map(|text| text.contains("\"numeric\": true"))
+                .unwrap_or(false)
+        })
+    }
+
     fn report(measurement: &Measurement, dir: &Path, entry: &str, repeat: usize) {
         let per_cpu = measurement.cpu.as_secs_f64() * 1000.0 / repeat as f64;
         let per_gpu = measurement.gpu.as_secs_f64() * 1000.0 / repeat as f64;
@@ -213,9 +248,29 @@ mod benchmark {
         println!();
 
         if measurement.matched {
+            if measurement.numeric_checked {
+                println!("note         numeric kernel artifact: results are bit-identical");
+            }
             println!("correctness   original and rewritten Wasm memory **match word-for-word** ✓");
+        } else if measurement.numeric_checked && measurement.numeric_violations == 0 {
+            println!(
+                "correctness   numeric contract within ULP/atol ✓ (max relative error {:.3e})",
+                measurement.numeric_max_relative
+            );
+            if let Some(at) = measurement.mismatch_at {
+                println!("              exact bytes differ at byte offset {at} (allowed by the contract)");
+            }
         } else {
             println!("correctness   ✖ **mismatch** — original and rewritten Wasm memory differ");
+            if measurement.numeric_checked {
+                println!(
+                    "              numeric contract violations: {} (first at byte offset {})",
+                    measurement.numeric_violations,
+                    measurement
+                        .numeric_first_violation
+                        .map_or_else(|| "n/a".to_string(), |at| at.to_string())
+                );
+            }
             if let Some(at) = measurement.mismatch_at {
                 println!("              first difference at byte offset {at}");
             }
@@ -274,6 +329,43 @@ mod benchmark {
             target[*offset..end].copy_from_slice(bytes);
         }
         Ok(())
+    }
+
+
+    pub(crate) fn numeric_contract(left: &[u8], right: &[u8]) -> (usize, f32, Option<usize>) {
+        let mut violations = 0_usize;
+        let mut max_relative = 0.0_f32;
+        let mut first_violation = None;
+        let (left_words, _) = left.as_chunks::<4>();
+        let (right_words, _) = right.as_chunks::<4>();
+        for (index, (left, right)) in left_words.iter().zip(right_words).enumerate() {
+            let left_bits = u32::from_le_bytes(*left);
+            let right_bits = u32::from_le_bytes(*right);
+            if left_bits == right_bits {
+                continue;
+            }
+            let left_value = f32::from_bits(left_bits);
+            let right_value = f32::from_bits(right_bits);
+            let finite_same_sign = left_value.is_finite()
+                && right_value.is_finite()
+                && left_value.is_sign_positive() == right_value.is_sign_positive();
+            let ulp = (i64::from(left_bits) - i64::from(right_bits)).abs();
+            let relative =
+                (left_value - right_value).abs() / right_value.abs().max(f32::MIN_POSITIVE);
+            let close = finite_same_sign
+                && (ulp <= i64::from(heterowasm_wgsl::F32_ULP_BOUND)
+                    || relative <= heterowasm_wgsl::F32_RTOL
+                    || (left_value - right_value).abs() <= heterowasm_wgsl::F32_ATOL);
+            if close {
+                max_relative = max_relative.max(relative);
+            } else {
+                violations += 1;
+                if first_violation.is_none() {
+                    first_violation = Some(index * 4);
+                }
+            }
+        }
+        (violations, max_relative, first_violation)
     }
 
     fn first_mismatch(left: &[u8], right: &[u8]) -> Option<usize> {
