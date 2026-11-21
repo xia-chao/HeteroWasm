@@ -753,3 +753,32 @@ fn sum_shift_limit_keeps_the_index_span_and_skips_value_slots() {
         "dispatch must be the trip count, not the bound expression"
     );
 }
+
+
+#[test]
+fn word_index_readback_covers_every_iteration() {
+    let shader = Shader {
+        source: "mem[params.p0 + 2u * batch] = 1u;",
+        workgroup_size: 64,
+        dispatch: DispatchSpec::FromField(1),
+        min_offset_bytes: 0,
+        max_constant_bytes: 0,
+        max_stride_bytes: 8,
+        index_field: Some(0),
+        launch_count: None,
+        read_slots: Vec::new(),
+        write_slots: vec![0],
+    };
+    let pieces = crate::dispatch::Span::pieces(
+        &shader,
+        &[0, 64],
+        4096,
+        crate::dispatch::AccessDirection::Readback,
+    )
+    .expect("word-index kernel must produce a readback range");
+    let hi = pieces.iter().map(|(_, hi)| *hi).max().unwrap_or(0);
+    assert!(
+        hi >= 256,
+        "readback must reach byte 256 (word 62 + 4), got {hi}"
+    );
+}

@@ -5289,6 +5289,11 @@ fn step_two_index_stops_at_the_limit() -> TestResult {
         "guard must advance by the induction step; source was:\n{}",
         kernel.source
     );
+    assert!(
+        kernel.source.contains("mem[params.p0 + 2u * batch]"),
+        "batched execution must use batch in the statement too; source was:\n{}",
+        kernel.source
+    );
     let start = 4_i32;
     let limit = 12_i32;
     let used = 64_usize;
