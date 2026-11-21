@@ -7,7 +7,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.98"
 license = "MIT"
@@ -20,18 +20,18 @@ categories = ["wasm", "development-tools"]
 [workspace.dependencies]
 # In-tree path deps must also set version: deny.toml bans.wildcards = "deny"
 # treats a missing version as a wildcard, which is exactly how bare path deps look.
-heterowasm-ir = { version = "0.1.0", path = "crates/heterowasm-ir" }
-heterowasm-trace = { version = "0.1.0", path = "crates/heterowasm-trace" }
-heterowasm-frontend = { version = "0.1.0", path = "crates/heterowasm-frontend" }
-heterowasm-cfg = { version = "0.1.0", path = "crates/heterowasm-cfg" }
-heterowasm-scev = { version = "0.1.0", path = "crates/heterowasm-scev" }
-heterowasm-address = { version = "0.1.0", path = "crates/heterowasm-address" }
-heterowasm-dependence = { version = "0.1.0", path = "crates/heterowasm-dependence" }
-heterowasm-legality = { version = "0.1.0", path = "crates/heterowasm-legality" }
-heterowasm-eval = { version = "0.1.0", path = "crates/heterowasm-eval" }
-heterowasm-bounds = { version = "0.1.0", path = "crates/heterowasm-bounds" }
-heterowasm-wgsl = { version = "0.1.0", path = "crates/heterowasm-wgsl" }
-heterowasm-corpus = { version = "0.1.0", path = "crates/heterowasm-corpus" }
+heterowasm-ir = { version = "0.2.0", path = "crates/heterowasm-ir" }
+heterowasm-trace = { version = "0.2.0", path = "crates/heterowasm-trace" }
+heterowasm-frontend = { version = "0.2.0", path = "crates/heterowasm-frontend" }
+heterowasm-cfg = { version = "0.2.0", path = "crates/heterowasm-cfg" }
+heterowasm-scev = { version = "0.2.0", path = "crates/heterowasm-scev" }
+heterowasm-address = { version = "0.2.0", path = "crates/heterowasm-address" }
+heterowasm-dependence = { version = "0.2.0", path = "crates/heterowasm-dependence" }
+heterowasm-legality = { version = "0.2.0", path = "crates/heterowasm-legality" }
+heterowasm-eval = { version = "0.2.0", path = "crates/heterowasm-eval" }
+heterowasm-bounds = { version = "0.2.0", path = "crates/heterowasm-bounds" }
+heterowasm-wgsl = { version = "0.2.0", path = "crates/heterowasm-wgsl" }
+heterowasm-corpus = { version = "0.2.0", path = "crates/heterowasm-corpus" }
 
 clap = { version = "4.6", features = ["derive"] }
 thiserror = "2"
