@@ -831,7 +831,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "heterowasm-address"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "heterowasm-cfg",
  "heterowasm-corpus",
@@ -843,7 +843,7 @@ dependencies = [
 
 [[package]]
 name = "heterowasm-bounds"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "heterowasm-address",
  "heterowasm-cfg",
@@ -857,7 +857,7 @@ dependencies = [
 
 [[package]]
 name = "heterowasm-cfg"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "heterowasm-corpus",
  "heterowasm-frontend",
@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "heterowasm-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "heterowasm-address",
@@ -887,14 +887,14 @@ dependencies = [
 
 [[package]]
 name = "heterowasm-corpus"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "wat",
 ]
 
 [[package]]
 name = "heterowasm-dependence"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "heterowasm-address",
  "heterowasm-cfg",
@@ -907,7 +907,7 @@ dependencies = [
 
 [[package]]
 name = "heterowasm-eval"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "heterowasm-address",
  "heterowasm-cfg",
@@ -923,7 +923,7 @@ dependencies = [
 
 [[package]]
 name = "heterowasm-frontend"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "heterowasm-corpus",
  "heterowasm-trace",
@@ -935,11 +935,11 @@ dependencies = [
 
 [[package]]
 name = "heterowasm-ir"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "heterowasm-legality"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "heterowasm-address",
  "heterowasm-bounds",
@@ -955,7 +955,7 @@ dependencies = [
 
 [[package]]
 name = "heterowasm-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "heterowasm-trace",
  "pollster",
@@ -967,7 +967,7 @@ dependencies = [
 
 [[package]]
 name = "heterowasm-scev"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "heterowasm-cfg",
  "heterowasm-corpus",
@@ -979,11 +979,11 @@ dependencies = [
 
 [[package]]
 name = "heterowasm-trace"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "heterowasm-wgsl"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "heterowasm-address",
  "heterowasm-bounds",

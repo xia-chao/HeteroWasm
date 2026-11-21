@@ -28,7 +28,7 @@ heterowasm-scev.workspace = true
 heterowasm-trace.workspace = true
 clap.workspace = true
 thiserror.workspace = true
-heterowasm-wgsl = { version = "0.1.0", path = "../heterowasm-wgsl" }
+heterowasm-wgsl = { version = "0.2.0", path = "../heterowasm-wgsl" }
 wat.workspace = true
-heterowasm-runtime = { version = "0.1.0", path = "../heterowasm-runtime" }
+heterowasm-runtime = { version = "0.2.0", path = "../heterowasm-runtime" }
 wasmtime = "49.0.5"

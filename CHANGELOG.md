@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-11-21)
 
 - Kernels are no longer capped by wgpu's 65535-workgroups-per-dimension limit: the generated
   shader walks the trip in stride-sized batches and the host clamps the dispatch count. A
