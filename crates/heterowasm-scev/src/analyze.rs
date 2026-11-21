@@ -105,11 +105,16 @@ impl ScalarEvolution {
         carried_non_affine.retain(|parameter| !invariance.value_is_invariant(*parameter));
 
 
-        let (memory_recurrences, memory_recurrence_addresses) = if induction.is_empty() {
-            find_memory_recurrences(body, natural_loop, &invariant_params)
-        } else {
-            (Vec::new(), Vec::new())
-        };
+        let (memory_recurrences, memory_recurrence_addresses, recurrence_report) =
+            if induction.is_empty() {
+                find_memory_recurrences(body, natural_loop, &invariant_params)
+            } else {
+                (
+                    Vec::new(),
+                    Vec::new(),
+                    crate::memory_recurrence::RecurrenceReport::default(),
+                )
+            };
 
         let memory_recurrence_pairs: Vec<(Value, Value)> = memory_recurrence_addresses
             .into_iter()
@@ -128,6 +133,15 @@ impl ScalarEvolution {
         }
         induction.extend(memory_recurrences);
 
+        if recurrence_report.accumulator_like > 0 {
+            trace
+                .info(Stage::ScalarEvolution, "memory-carried accumulator shape")
+                .field("header", natural_loop.header.index())
+                .field("accumulator_like", recurrence_report.accumulator_like)
+                .field("induction", induction.len())
+                .field("carried_non_affine", carried_non_affine.len())
+                .emit();
+        }
         let recurrence_in_memory = induction.is_empty() && !header_def.params.is_empty();
         if recurrence_in_memory {
             trace
@@ -138,6 +152,19 @@ impl ScalarEvolution {
                 .field("header", natural_loop.header.index())
                 .field("parameters", header_def.params.len())
                 .field("outside_coverage", true)
+                .field("stores_in_loop", recurrence_report.stores_in_loop)
+                .field("not_add_of_load", recurrence_report.not_add_of_load)
+                .field("add_nonconstant", recurrence_report.add_nonconstant)
+                .field("copy_load", recurrence_report.copy_load)
+                .field("other_operator", recurrence_report.other_operator)
+                .field("address_mismatch", recurrence_report.address_mismatch)
+                .field("memory_mismatch", recurrence_report.memory_mismatch)
+                .field(
+                    "address_not_invariant",
+                    recurrence_report.address_not_invariant,
+                )
+                .field("duplicate", recurrence_report.duplicate)
+                .field("multiple_stores", recurrence_report.multiple_stores)
                 .emit();
         }
 
