@@ -133,11 +133,15 @@ struct Params {
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-  let i : u32 = gid.x;
+  let stride : u32 = 4194240u;
+  for (var base : u32 = 0u; base <= 4294967295u - stride; base = base + stride) {
+    let batch : u32 = base + gid.x;
+    let i : u32 = batch;
   if (i >= 8u) {
     return;
   }
   mem[i] = params.p0;
+  }
 }
 ";
     assert_eq!(kernel.source, expected);
@@ -163,11 +167,15 @@ struct Params {
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-  let i : u32 = gid.x;
+  let stride : u32 = 4194240u;
+  for (var base : u32 = 0u; base <= 4294967295u - stride; base = base + stride) {
+    let batch : u32 = base + gid.x;
+    let i : u32 = batch;
   if (i >= params.p0) {
     return;
   }
   mem[params.p1 / 4u + i] = mem[params.p2 / 4u + i] + mem[params.p3 / 4u + i];
+  }
 }
 ";
     assert_eq!(kernel.source, expected);
@@ -191,11 +199,15 @@ struct Params {
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-  let i : u32 = gid.x;
+  let stride : u32 = 4194240u;
+  for (var base : u32 = 0u; base <= 4294967295u - stride; base = base + stride) {
+    let batch : u32 = base + gid.x;
+    let i : u32 = batch;
   if (i >= params.p0) {
     return;
   }
   mem[params.p1 / 4u + i] = (((1u * mem[params.p2 / 4u + i] + 3u) * mem[params.p2 / 4u + i] + 2u) * mem[params.p2 / 4u + i] + 1u) * mem[params.p2 / 4u + i] + 0u;
+  }
 }
 ";
     assert_eq!(kernel.source, expected);
@@ -243,11 +255,15 @@ struct Params {
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-  let i : u32 = gid.x;
+  let stride : u32 = 4194240u;
+  for (var base : u32 = 0u; base <= 4294967295u - stride; base = base + stride) {
+    let batch : u32 = base + gid.x;
+    let i : u32 = batch;
   if (i >= 8u) {
     return;
   }
   mem[params.p0 / 4u + i] = mem[params.p0 / 4u + i] * 2u;
+  }
 }
 ";
     assert_eq!(kernel.source, expected);
@@ -290,7 +306,9 @@ fn emission_should_not_be_constant_across_cases() {
 fn kernel_must_carry_the_invocation_contract() -> TestResult {
     let kernel = lower_first_loop("integer/constant_base")?;
     assert!(kernel.source.contains("@builtin(global_invocation_id)"));
-    assert!(kernel.source.contains("let i : u32 = gid.x;"));
+    assert!(kernel.source.contains("let stride : u32 = 4194240u;"));
+    assert!(kernel.source.contains("let batch : u32 = base + gid.x;"));
+    assert!(kernel.source.contains("let i : u32 = batch;"));
     assert!(kernel.source.contains("if (i >= 8u)"));
     Ok(())
 }
@@ -672,9 +690,13 @@ fn boundary_kernel(limit: u32) -> String {
              @group(0) @binding(1) var<uniform> params : Params;\n\
              @compute @workgroup_size(64)\n\
              fn main(@builtin(global_invocation_id) gid : vec3<u32>) {{\n\
-               let i : u32 = gid.x;\n\
-               if (i >= {limit}u) {{\n    return;\n  }}\n\
-               mem[i] = 7u;\n\
+               let stride : u32 = 4194240u;\n\
+               for (var base : u32 = 0u; base <= 4294967295u - stride; base = base + stride) {{\n\
+                 let batch : u32 = base + gid.x;\n\
+                 let i : u32 = batch;\n\
+                 if (i >= {limit}u) {{\n    return;\n  }}\n\
+                 mem[i] = 7u;\n\
+               }}\n\
              }}\n"
     )
 }
@@ -5263,7 +5285,7 @@ fn step_two_index_stops_at_the_limit() -> TestResult {
     assert!(
         kernel
             .source
-            .contains("params.p0 + 2u * gid.x >= params.p1"),
+            .contains("params.p0 + 2u * batch >= params.p1"),
         "guard must advance by the induction step; source was:\n{}",
         kernel.source
     );
@@ -5320,7 +5342,7 @@ fn step_two_exit_value_matches_cpu() -> TestResult {
     assert!(
         kernel
             .source
-            .contains("params.p0 + 2u * gid.x + 2u >= params.p1"),
+            .contains("params.p0 + 2u * batch + 2u >= params.p1"),
         "last iteration must advance by the induction step; source was:\n{}",
         kernel.source
     );
@@ -5463,14 +5485,14 @@ fn downward_step_matches_cpu() -> TestResult {
     assert!(
         kernel
             .source
-            .contains("params.p0 < 2u * gid.x || params.p0 - 2u * gid.x <= params.p1"),
+            .contains("params.p0 < 2u * batch || params.p0 - 2u * batch <= params.p1"),
         "downward guard must subtract the step; source was:\n{}",
         kernel.source
     );
     assert!(
         kernel
             .source
-            .contains("params.p0 - 2u * gid.x - 2u <= params.p1"),
+            .contains("params.p0 - 2u * batch - 2u <= params.p1"),
         "downward exit must use the value after the subtract; source was:\n{}",
         kernel.source
     );

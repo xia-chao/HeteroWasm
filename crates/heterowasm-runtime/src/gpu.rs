@@ -1,7 +1,9 @@
 use std::borrow::Cow;
 
 use crate::error::RuntimeError;
-use crate::types::{DispatchMemory, DispatchReadback, DispatchSpec, Shader};
+use crate::types::{
+    DispatchMemory, DispatchReadback, DispatchSpec, Shader, MAX_DISPATCH_WORKGROUPS,
+};
 use heterowasm_trace::{Stage, Trace};
 
 
@@ -477,7 +479,10 @@ impl GpuContext {
         };
 
         let dispatched = crate::dispatch::scheduled_invocations(shader, params, dispatched);
-        let workgroups = dispatched.div_ceil(shader.workgroup_size.max(1));
+
+        let workgroups = dispatched
+            .div_ceil(shader.workgroup_size.max(1))
+            .min(MAX_DISPATCH_WORKGROUPS);
 
         let mut encoder = self
             .device

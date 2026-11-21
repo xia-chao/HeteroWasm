@@ -625,7 +625,9 @@ pub mod gpu {
                     .loaded_count(params, initial)
                     .ok_or(GpuError::DispatchUnknown)?,
             };
-            let workgroups = dispatched.div_ceil(64);
+            let workgroups = dispatched
+                .div_ceil(64)
+                .min(crate::types::MAX_DISPATCH_WORKGROUPS);
 
             let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("readback"),
@@ -863,7 +865,13 @@ pub mod gpu {
                 });
                 pass.set_pipeline(&compiled.pipeline);
                 pass.set_bind_group(0, &workspace.bind_group, &[]);
-                pass.dispatch_workgroups(dispatched.div_ceil(64), 1, 1);
+                pass.dispatch_workgroups(
+                    dispatched
+                        .div_ceil(64)
+                        .min(crate::types::MAX_DISPATCH_WORKGROUPS),
+                    1,
+                    1,
+                );
             }
             encoder.copy_buffer_to_buffer(
                 &workspace.storage,

@@ -1340,27 +1340,36 @@ fn render_source(
     out.push('\n');
     out.push_str(&compute_header(workgroup_size));
 
+    out.push_str(&format!(
+        "  let stride : u32 = {}u;\n",
+        crate::types::MAX_DISPATCH_WORKGROUPS.saturating_mul(workgroup_size)
+    ));
+    out.push_str(
+        "  for (var base : u32 = 0u; base <= 4294967295u - stride; base = base + stride) {\n",
+    );
+    out.push_str("    let batch : u32 = base + gid.x;\n");
+
     match start {
         None => {
             if induction_step < 0 {
                 out.push_str(&format!(
-                    "  let i : u32 = 0u - {}u * gid.x;\n",
+                    "    let i : u32 = 0u - {}u * batch;\n",
                     induction_step.unsigned_abs()
                 ));
             } else {
-                out.push_str("  let i : u32 = gid.x;\n");
+                out.push_str("    let i : u32 = batch;\n");
             }
         }
         Some(StartOffset::Constant(value)) => {
             if induction_step < 0 {
                 out.push_str(&format!(
-                    "  let i : u32 = {} - {}u * gid.x;\n",
+                    "    let i : u32 = {} - {}u * batch;\n",
                     constant_index(value),
                     induction_step.unsigned_abs()
                 ));
             } else {
                 out.push_str(&format!(
-                    "  let i : u32 = {} + gid.x;\n",
+                    "    let i : u32 = {} + batch;\n",
                     constant_index(value)
                 ));
             }
@@ -1372,11 +1381,11 @@ fn render_source(
             let origin = offset.text();
             if induction_step < 0 {
                 out.push_str(&format!(
-                    "  let i : u32 = {origin} - {}u * gid.x;\n",
+                    "    let i : u32 = {origin} - {}u * batch;\n",
                     induction_step.unsigned_abs()
                 ));
             } else {
-                out.push_str(&format!("  let i : u32 = {origin} + gid.x;\n"));
+                out.push_str(&format!("    let i : u32 = {origin} + batch;\n"));
             }
         }
     }
@@ -1401,12 +1410,12 @@ fn render_source(
                 None => "0u".to_string(),
                 Some(offset) => offset.text(),
             };
-            format!("{origin} - {magnitude}u * gid.x - {magnitude}u <= {bound}")
+            format!("{origin} - {magnitude}u * batch - {magnitude}u <= {bound}")
         } else {
             let current = match &start {
-                None => format!("{induction_step}u * gid.x"),
+                None => format!("{induction_step}u * batch"),
                 Some(offset) => {
-                    format!("{} + {induction_step}u * gid.x", offset.text())
+                    format!("{} + {induction_step}u * batch", offset.text())
                 }
             };
             let comparison = if inclusive { ">" } else { ">=" };
@@ -1418,6 +1427,7 @@ fn render_source(
         }
         out.push_str("  }\n");
     }
+    out.push_str("  }\n");
     out.push_str("}\n");
 
     out
@@ -1628,15 +1638,15 @@ fn guard(dispatch: Dispatch, step: i64, start: &Option<StartOffset>, inclusive: 
             None => "0u".to_string(),
             Some(offset) => offset.text(),
         };
-        let cursor = format!("{origin} - {magnitude}u * gid.x");
+        let cursor = format!("{origin} - {magnitude}u * batch");
 
         return format!(
-            "  if ({origin} < {magnitude}u * gid.x || {cursor} <= {bound}) {{\n    return;\n  }}\n"
+            "  if ({origin} < {magnitude}u * batch || {cursor} <= {bound}) {{\n    return;\n  }}\n"
         );
     }
     let cursor = match start {
-        None => format!("{step}u * gid.x"),
-        Some(offset) => format!("{} + {step}u * gid.x", offset.text()),
+        None => format!("{step}u * batch"),
+        Some(offset) => format!("{} + {step}u * batch", offset.text()),
     };
     format!("  if ({cursor} {comparison} {bound}) {{\n    return;\n  }}\n")
 }

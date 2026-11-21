@@ -1,3 +1,6 @@
+pub const MAX_DISPATCH_WORKGROUPS: u32 = 65_535;
+
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchSpec {
 
