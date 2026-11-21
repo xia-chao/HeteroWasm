@@ -5699,6 +5699,40 @@ fn f32_numeric_mode_lowers_and_stays_within_contract() -> TestResult {
         lower_bytes_with_mode(&bytes, NumericMode::Exact).is_err(),
         "exact mode must keep f32 arithmetic off the GPU"
     );
+
+    let kernel_32 = lower_bytes_with_mode(&bytes, NumericMode::F32)?;
+    assert!(
+        kernel_32.shader_multiplies_still_slower_than_cpu(),
+        "32 f32 multiplies must stay off the GPU until the threshold is met"
+    );
+    let mut value_64 =
+        "(f32.load (i32.add (local.get $in) (i32.mul (local.get $i) (i32.const 4))))".to_string();
+    for k in 0..64 {
+        value_64 = format!(
+            "(f32.mul {value_64} (f32.const {}))",
+            1.5 + f64::from(k % 8) * 0.125
+        );
+    }
+    let source_64 = format!(
+        r#"(module
+      (memory (export "mem") 16)
+      (func (export "main") (param $out i32) (param $in i32) (param $n i32)
+        (local $i i32)
+        (block $exit
+          (loop $loop
+            (br_if $exit (i32.ge_s (local.get $i) (local.get $n)))
+            (f32.store
+              (i32.add (local.get $out) (i32.mul (local.get $i) (i32.const 4)))
+              {value_64})
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $loop)))))"#
+    );
+    let bytes_64 = wat::parse_str(&source_64)?;
+    let kernel_64 = lower_bytes_with_mode(&bytes_64, NumericMode::F32)?;
+    assert!(
+        !kernel_64.shader_multiplies_still_slower_than_cpu(),
+        "64 f32 multiplies measured 2.25x faster and must pass the gate"
+    );
     let kernel = lower_bytes_with_mode(&bytes, NumericMode::F32)?;
     assert!(
         kernel.source.contains("bitcast<f32>") && kernel.source.contains("bitcast<u32>"),

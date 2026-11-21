@@ -83,8 +83,21 @@ impl Kernel {
     pub const SHADER_MULS_STILL_SLOWER_AT_OR_BELOW: usize = 31;
 
 
+    pub const F32_SHADER_MULS_STILL_SLOWER_AT_OR_BELOW: usize = 63;
+
+
+    pub fn uses_f32(&self) -> bool {
+        self.source.contains("bitcast<f32>")
+    }
+
+
     pub fn shader_multiplies_still_slower_than_cpu(&self) -> bool {
-        self.source.matches(" * ").count() <= Self::SHADER_MULS_STILL_SLOWER_AT_OR_BELOW
+        let multiplies = self.source.matches(" * ").count();
+        if self.uses_f32() {
+            multiplies <= Self::F32_SHADER_MULS_STILL_SLOWER_AT_OR_BELOW
+        } else {
+            multiplies <= Self::SHADER_MULS_STILL_SLOWER_AT_OR_BELOW
+        }
     }
 
 
