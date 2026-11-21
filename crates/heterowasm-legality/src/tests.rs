@@ -296,3 +296,45 @@ fn reduction_recognizer_accepts_the_corpus_accumulator() -> TestResult {
     );
     Ok(())
 }
+
+
+fn recognize_gathers(
+    case_name: &str,
+) -> Result<Vec<super::gather::Gather>, Box<dyn std::error::Error>> {
+    let case = CASES
+        .iter()
+        .find(|case| case.name == case_name)
+        .ok_or_else(|| format!("case {case_name} is not registered"))?;
+    let bytes = case.to_wasm()?;
+    let trace = Trace::silent();
+    let mut module = load_module(&bytes, &trace)?;
+    expand_all_bodies(&mut module, &trace)?;
+    for decl in module.funcs.values() {
+        let FuncDecl::Body(_, _, body) = decl else {
+            continue;
+        };
+        let flow = ControlFlow::analyze(body, &trace);
+        let loops = flow.natural_loops(body, &trace);
+        let Some(natural) = loops.first() else {
+            continue;
+        };
+        let evolution = ScalarEvolution::analyze(body, natural, &trace);
+        return Ok(super::gather::recognize(body, natural, &evolution));
+    }
+    Err("case must contain at least one natural loop".into())
+}
+
+
+#[test]
+fn gather_recognizer_classifies_the_corpus_indirect_index() -> TestResult {
+    let gathers = recognize_gathers("indirect_index")?;
+    assert_eq!(gathers.len(), 1, "expected exactly one gather load");
+    let gather = &gathers[0];
+    assert_eq!(gather.stride, 4);
+    assert_eq!(gather.offset, 0);
+    assert!(gather.base.is_some(), "data base must be recognized");
+    assert!(gather.index_load.is_some(), "index must come from a load");
+    assert!(gather.index_affine, "index array address must be affine");
+    assert_eq!(gather.bound, super::gather::IndexBound::Unbounded);
+    Ok(())
+}

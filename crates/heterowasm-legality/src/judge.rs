@@ -56,6 +56,8 @@ impl LoopLegal {
             BoundsAnalysis::analyze(body, accesses, evolution, extent, &memory_bounds, trace);
 
         let dependence = DependenceAnalysis::analyze(accesses, evolution, trace);
+
+        crate::gather::report(body, natural_loop, evolution, trace);
         let obligations = vec![
             control_obligation(body, natural_loop, evolution),
             memory_obligation(accesses, bounds.proven()),
