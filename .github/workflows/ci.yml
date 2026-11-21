@@ -39,7 +39,7 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
   test:
-    name: test (CPU; GPU cases skipped, hosted runners have no device)
+    name: test (CPU + software Vulkan)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
