@@ -5,7 +5,7 @@ use heterowasm_frontend::waffle::entity::EntityRef;
 use heterowasm_frontend::waffle::{Func, FuncDecl, Module};
 use heterowasm_frontend::{expand_all_bodies, load_module, normalize_bulk_memory};
 use heterowasm_trace::{Stage, Trace};
-use heterowasm_wgsl::{artifact, Artifact, LoopPlanSet};
+use heterowasm_wgsl::{artifact, Artifact, LoopPlanSet, NumericMode};
 
 use crate::error::CliError;
 use crate::types::KernelEmission;
@@ -16,14 +16,20 @@ pub(crate) fn compile(
     output: &Path,
     trace: Trace,
     require_offload: bool,
+    numeric: bool,
 ) -> Result<(), CliError> {
+    let mode = if numeric {
+        NumericMode::F32
+    } else {
+        NumericMode::Exact
+    };
     let _scope = trace.stage(Stage::Runtime, "compile");
     let raw = std::fs::read(input).map_err(|source| CliError::Read {
         path: input.to_path_buf(),
         source,
     })?;
 
-    let prepared = prepare_input(&raw, &trace)?;
+    let prepared = prepare_input(&raw, mode, &trace)?;
 
 
     std::fs::create_dir_all(output).map_err(|source| CliError::CreateDir {
@@ -85,11 +91,12 @@ pub(crate) fn compile(
                 .emit();
             expand_all_bodies(&mut module, &trace)
                 .map_err(|err| CliError::Message(err.to_string()))?;
-            heterowasm_wgsl::plan_gpu_loops(&module, &trace)
+            heterowasm_wgsl::plan_gpu_loops_with(&module, &trace, mode)
         }
     };
     let fusion_only: HashSet<Func> = plan_set.fusion_candidates.clone();
-    let fused = if fusion_only.is_empty() {
+
+    let fused = if numeric || fusion_only.is_empty() {
         None
     } else {
         emit_fused(&module, output, &trace, &plan_set)?
@@ -198,7 +205,7 @@ struct Prepared {
 }
 
 
-fn prepare_input(raw: &[u8], trace: &Trace) -> Result<Prepared, CliError> {
+fn prepare_input(raw: &[u8], mode: NumericMode, trace: &Trace) -> Result<Prepared, CliError> {
 
     let probe_bytes = match std::str::from_utf8(raw)
         .ok()
@@ -214,7 +221,7 @@ fn prepare_input(raw: &[u8], trace: &Trace) -> Result<Prepared, CliError> {
     expand_all_bodies(&mut probe, trace).map_err(|err| CliError::Message(err.to_string()))?;
 
 
-    let plans = heterowasm_wgsl::plan_gpu_loops(&probe, trace);
+    let plans = heterowasm_wgsl::plan_gpu_loops_with(&probe, trace, mode);
     let probe_funcs = probe.funcs.len();
     let probe_shape: Vec<Option<(usize, usize)>> = probe
         .funcs

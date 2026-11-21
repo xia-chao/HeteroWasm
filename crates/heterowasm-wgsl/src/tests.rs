@@ -19,7 +19,7 @@ use heterowasm_trace::{Level, Sink, Stage, Trace};
 use std::collections::HashSet;
 use waffle::FuncDecl;
 
-use super::{lower, Dispatch, Kernel, LowerError};
+use super::{lower, lower_with_mode, Dispatch, Kernel, LowerError, NumericMode};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -33,6 +33,13 @@ fn lower_first_loop(case_name: &str) -> Result<Kernel, Box<dyn std::error::Error
 
 
 fn lower_bytes(bytes: &[u8]) -> Result<Kernel, Box<dyn std::error::Error>> {
+    lower_bytes_with_mode(bytes, NumericMode::Exact)
+}
+
+fn lower_bytes_with_mode(
+    bytes: &[u8],
+    mode: NumericMode,
+) -> Result<Kernel, Box<dyn std::error::Error>> {
     let mut module = load_module(bytes, &Trace::silent())?;
     expand_all_bodies(&mut module, &Trace::silent())?;
 
@@ -56,13 +63,14 @@ fn lower_bytes(bytes: &[u8]) -> Result<Kernel, Box<dyn std::error::Error>> {
             .cloned()
             .collect();
         let extent = LoopExtent::analyze(body, natural_loop, &evolution);
-        return lower(
+        return lower_with_mode(
             body,
             natural_loop,
             &accesses,
             &evolution,
             extent,
             64,
+            mode,
             &trace,
         )
         .map_err(Into::into);
@@ -5654,6 +5662,125 @@ fn inclusive_exit_guard_keeps_the_boundary_iteration() -> TestResult {
         !kernel.source.contains("i >= params.p"),
         "the boundary iteration would be skipped by a >= guard:\n{}",
         kernel.source
+    );
+    Ok(())
+}
+
+
+#[test]
+fn f32_numeric_mode_lowers_and_stays_within_contract() -> TestResult {
+    use super::conformance::gpu;
+
+    let mut value =
+        "(f32.load (i32.add (local.get $in) (i32.mul (local.get $i) (i32.const 4))))".to_string();
+    for k in 0..32 {
+        value = format!(
+            "(f32.mul {value} (f32.const {}))",
+            1.5 + f64::from(k) * 0.125
+        );
+    }
+    value = format!("(f32.add {value} (f32.const 0.25))");
+    let source = format!(
+        r#"(module
+      (memory (export "mem") 16)
+      (func (export "main") (param $out i32) (param $in i32) (param $n i32)
+        (local $i i32)
+        (block $exit
+          (loop $loop
+            (br_if $exit (i32.ge_s (local.get $i) (local.get $n)))
+            (f32.store
+              (i32.add (local.get $out) (i32.mul (local.get $i) (i32.const 4)))
+              {value})
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $loop)))))"#
+    );
+    let bytes = wat::parse_str(&source)?;
+    assert!(
+        lower_bytes_with_mode(&bytes, NumericMode::Exact).is_err(),
+        "exact mode must keep f32 arithmetic off the GPU"
+    );
+    let kernel = lower_bytes_with_mode(&bytes, NumericMode::F32)?;
+    assert!(
+        kernel.source.contains("bitcast<f32>") && kernel.source.contains("bitcast<u32>"),
+        "numeric kernel must bitcast loads and stores; source was:\n{}",
+        kernel.source
+    );
+
+    let out = 0_i32;
+    let input = 4096_i32;
+    let n = 1024_i32;
+    let written = (n as usize) * 4;
+    let mut seed = vec![0_u8; input as usize + written];
+    for index in 0..(n as usize) {
+        let bits = (1.0_f32 + index as f32 * 0.5).to_bits();
+        let at = input as usize + index * 4;
+        seed[at..at + 4].copy_from_slice(&bits.to_le_bytes());
+    }
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &bytes)?;
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[])?;
+    let memory = instance
+        .get_memory(&mut store, "mem")
+        .ok_or("missing memory")?;
+    memory.write(&mut store, 0, &seed)?;
+    instance
+        .get_typed_func::<(i32, i32, i32), ()>(&mut store, "main")?
+        .call(&mut store, (out, input, n))?;
+    let cpu = memory.data(&store)[..written].to_vec();
+
+    let context = gpu::GpuContext::new().map_err(|error| error.to_string())?;
+    let compiled = context
+        .compile(&kernel)
+        .map_err(|error| error.to_string())?;
+
+    let gpu = context
+        .run(
+            &compiled,
+            &kernel,
+            &seed,
+            &[n as u32, out as u32, input as u32],
+        )
+        .map_err(|error| error.to_string())?;
+
+    let mut worst_ulp = 0_i64;
+    let mut mismatches = 0_usize;
+    let (gpu_words, _) = gpu[..written].as_chunks::<4>();
+    let (cpu_words, _) = cpu.as_chunks::<4>();
+    for (left, right) in gpu_words.iter().zip(cpu_words) {
+        let left_bits = u32::from_le_bytes(*left);
+        let right_bits = u32::from_le_bytes(*right);
+        let left_value = f32::from_bits(left_bits);
+        let right_value = f32::from_bits(right_bits);
+        let finite_same_sign = left_value.is_finite()
+            && right_value.is_finite()
+            && left_value.is_sign_positive() == right_value.is_sign_positive();
+        let ulp = if finite_same_sign {
+            (i64::from(left_bits) - i64::from(right_bits)).abs()
+        } else {
+            i64::MAX
+        };
+        let relative = if right_value != 0.0 {
+            ((left_value - right_value) / right_value).abs()
+        } else {
+            f32::NAN
+        };
+        let close = left_bits == right_bits
+            || (finite_same_sign
+                && (ulp <= i64::from(super::F32_ULP_BOUND)
+                    || relative <= super::F32_RTOL
+                    || (left_value - right_value).abs() <= super::F32_ATOL));
+        if !close {
+            mismatches += 1;
+        } else if finite_same_sign {
+            worst_ulp = worst_ulp.max(ulp);
+        }
+    }
+    assert_eq!(mismatches, 0, "f32 results must stay within the contract");
+    assert!(
+        worst_ulp <= i64::from(super::F32_ULP_BOUND) * 2,
+        "worst ULP distance was {worst_ulp}"
     );
     Ok(())
 }

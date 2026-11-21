@@ -13,9 +13,9 @@ pub mod planning {
     use waffle::{Block, Func, FuncDecl, Module, Operator, ValueDef};
 
     use crate::fusion::{from_plans::FusionInput, region_key, Collected, RegionUses};
-    use crate::lower::lower;
+    use crate::lower::lower_with_mode;
     use crate::single::{loop_exit, offload_loop};
-    use crate::types::{Dispatch, Kernel, LoopRegion};
+    use crate::types::{Dispatch, Kernel, LoopRegion, NumericMode};
 
 
     type FusionSeeds = HashMap<
@@ -239,6 +239,15 @@ pub mod planning {
 
 
     pub fn plan_gpu_loops(module: &Module<'_>, trace: &Trace) -> LoopPlanSet {
+        plan_gpu_loops_with(module, trace, NumericMode::Exact)
+    }
+
+
+    pub fn plan_gpu_loops_with(
+        module: &Module<'_>,
+        trace: &Trace,
+        numeric: NumericMode,
+    ) -> LoopPlanSet {
         let mut set = LoopPlanSet {
             eligible: Vec::new(),
             rewritable: Vec::new(),
@@ -319,13 +328,14 @@ pub mod planning {
                     }
                     continue;
                 }
-                let kernel = match lower(
+                let kernel = match lower_with_mode(
                     body,
                     &natural_loop,
                     &accesses,
                     &evolution,
                     extent,
                     64,
+                    numeric,
                     trace,
                 ) {
                     Ok(kernel) => kernel,
@@ -477,4 +487,6 @@ pub mod planning {
 }
 
 pub(crate) use planning::EffectFacts;
-pub use planning::{plan_gpu_loops, rewrite_with_plans, LoopPlanSet, OffloadPlan};
+pub use planning::{
+    plan_gpu_loops, plan_gpu_loops_with, rewrite_with_plans, LoopPlanSet, OffloadPlan,
+};

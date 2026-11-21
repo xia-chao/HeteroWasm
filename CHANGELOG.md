@@ -2,6 +2,12 @@
 
 ## 0.2.0 (2026-11-21)
 
+- Optional `f32` numeric mode (`compile --numeric`, spec §14): `f32` loads/stores are
+  emitted with `bitcast` and `f32` add/sub/mul are lowered under a numeric contract
+  (ULP <= 4, or relative/absolute error <= 1e-6; non-finite values must match bitwise).
+  Exact mode is unchanged and still refuses `f32` arithmetic. The first measurement at
+  n = 65536 is 1.15x slower than the CPU, so the f32 cost gate still needs calibration
+  before this becomes a default opportunity.
 - Two correctness fixes for loops whose induction starts at a parameter. The runtime now
   treats the start and the bound as element indices (not byte addresses) when computing
   upload/readback ranges, so the tail of the written region is copied back and reads are

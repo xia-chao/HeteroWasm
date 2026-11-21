@@ -190,3 +190,29 @@ pub struct GpuFusionPlan {
     pub kernel: Kernel,
     pub func: waffle::Func,
 }
+
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NumericMode {
+
+    #[default]
+    Exact,
+
+    F32,
+}
+
+
+pub const F32_ULP_BOUND: u32 = 4;
+
+
+pub const F32_ATOL: f32 = 1e-6;
+
+
+pub const F32_RTOL: f32 = 1e-6;
+
+impl NumericMode {
+
+    pub fn allows_f32(self) -> bool {
+        matches!(self, NumericMode::F32)
+    }
+}
