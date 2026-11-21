@@ -2,6 +2,14 @@
 
 ## 0.2.0 (2026-11-21)
 
+- Two correctness fixes for loops whose induction starts at a parameter. The runtime now
+  treats the start and the bound as element indices (not byte addresses) when computing
+  upload/readback ranges, so the tail of the written region is copied back and reads are
+  uploaded in full; previously such kernels silently lost GPU writes beyond the first
+  alignment block. The emitted statements also use the batched index, so trips above the
+  65535-workgroup limit no longer rewrite the first batch's addresses. Measured on a
+  step-2, 10,000,000-element loop: memory matches word-for-word and the GPU is 2.31x
+  faster (same-address load/store variant 1.48x).
 - Kernels are no longer capped by wgpu's 65535-workgroups-per-dimension limit: the generated
   shader walks the trip in stride-sized batches and the host clamps the dispatch count. A
   32-multiply loop with 5,000,000 elements now runs correctly (7.7x faster than the CPU on the

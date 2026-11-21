@@ -1390,8 +1390,9 @@ fn render_source(
         }
     }
     out.push_str(&guard(dispatch, induction_step, &start, inclusive));
+
     for statement in rendered.statements {
-        out.push_str(statement);
+        out.push_str(&statement.replace("gid.x", "batch"));
         out.push('\n');
     }
 
@@ -1423,7 +1424,10 @@ fn render_source(
         };
         out.push_str(&format!("  if ({predicate}) {{\n"));
         for (position, expression) in rendered.results.iter().enumerate() {
-            out.push_str(&format!("    results[{position}] = {expression};\n"));
+            out.push_str(&format!(
+                "    results[{position}] = {};\n",
+                expression.replace("gid.x", "batch")
+            ));
         }
         out.push_str("  }\n");
     }

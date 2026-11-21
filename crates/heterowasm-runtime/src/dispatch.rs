@@ -230,6 +230,50 @@ fn field_role(source: &str, slot: usize) -> FieldRole {
     }
 }
 
+
+fn word_index_slot(shader: &Shader<'_>) -> Option<usize> {
+    let slot = shader.index_field?;
+    match shader.dispatch {
+        DispatchSpec::FromField(_) | DispatchSpec::FromFieldMask(_, _) => {}
+        _ => return None,
+    }
+
+    let used = format!("params.p{slot}");
+    let byte_base = format!("params.p{slot} / 4u");
+    if !shader.source.contains(&used) || shader.source.contains(&byte_base) {
+        return None;
+    }
+    Some(slot)
+}
+
+
+fn word_index_extent(shader: &Shader<'_>, params: &[u32], slot: usize) -> Option<(u64, u64)> {
+    let (limit_slot, limit_mask) = match shader.dispatch {
+        DispatchSpec::FromField(field) => (field, u32::MAX),
+        DispatchSpec::FromFieldMask(field, mask) => (field, mask),
+        _ => return None,
+    };
+    let start = u64::from(*params.get(slot)?);
+    let limit = u64::from(params.get(limit_slot)? & limit_mask);
+    let stride = u64::try_from(shader.max_stride_bytes.max(0)).ok()?;
+    if stride < 4 || stride % 4 != 0 {
+        return None;
+    }
+    let step = stride / 4;
+    if start <= limit {
+        let span = limit - start;
+        let iterations = span.div_ceil(step);
+        Some((start, start.saturating_add(iterations.saturating_mul(step))))
+    } else {
+        let span = start - limit;
+        let iterations = span.div_ceil(step);
+        Some((
+            start.saturating_sub(iterations.saturating_mul(step)),
+            start.saturating_add(1),
+        ))
+    }
+}
+
 fn spans(shader: &Shader<'_>, params: &[u32], trip: u64) -> Vec<Span> {
 
     let stride = u64::try_from(shader.max_stride_bytes.max(0)).unwrap_or(0);
@@ -241,6 +285,9 @@ fn spans(shader: &Shader<'_>, params: &[u32], trip: u64) -> Vec<Span> {
             .saturating_add(constant)
             .saturating_add(4),
     );
+
+    let word_slot = word_index_slot(shader);
+    let word_extent = word_slot.and_then(|slot| word_index_extent(shader, params, slot));
     params
         .iter()
         .enumerate()
@@ -264,14 +311,36 @@ fn spans(shader: &Shader<'_>, params: &[u32], trip: u64) -> Vec<Span> {
         .filter(|(slot, _)| {
 
             match shader.index_field {
-                Some(index) if *slot == index => upward.is_some(),
+                Some(index) if *slot == index => upward.is_some() || word_extent.is_some(),
                 _ => true,
             }
         })
-        .map(|(slot, value)| Span {
-            slot,
-            start: u64::from(*value),
-            end: u64::from(*value).saturating_add(bytes),
+        .map(|(slot, value)| {
+            if let (Some(index_slot), Some((lo, hi))) = (word_slot, word_extent) {
+
+                let reach = hi
+                    .saturating_mul(4)
+                    .saturating_add(constant)
+                    .saturating_add(4);
+                if slot == index_slot {
+                    return Span {
+                        slot,
+                        start: lo.saturating_mul(4),
+                        end: reach,
+                    };
+                }
+                let start = u64::from(*value);
+                return Span {
+                    slot,
+                    start,
+                    end: start.saturating_add(reach),
+                };
+            }
+            Span {
+                slot,
+                start: u64::from(*value),
+                end: u64::from(*value).saturating_add(bytes),
+            }
         })
         .collect()
 }
