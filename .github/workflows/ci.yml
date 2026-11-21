@@ -24,8 +24,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.98.1"
           components: rustfmt, clippy
 
       - name: Cache cargo registry and target
@@ -44,15 +45,25 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
 
-      # Hosted runners have no GPU: wgpu reports no adapter and any test that
+      # Hosted runners have no GPU device. A software Vulkan driver (lavapipe)
+      # is installed so the GPU correctness tests still execute against a real
+      # adapter; the benchmark-style comparisons are skipped because a software
+      # device cannot say anything about GPU/CPU speed.
       # builds a device fails. The eleven such tests are skipped explicitly
       # instead of failing, and everything else still runs; locally they stay
       # mandatory.
+      - name: Install a software Vulkan driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers
+
       - name: Test
         run: |
           cargo test --locked --workspace --all-features -- \
@@ -60,13 +71,7 @@ jobs:
             --skip tests::crossover_scan_intensity \
             --skip tests::crossover_formal_measurement \
             --skip tests::artifact_round_trip_through_disk_runs_and_matches_wasm \
-            --skip tests::whole_program_split_across_cpu_and_gpu \
-            --skip tests::caller_imports_override_the_zero_stub \
-            --skip tests::caller_import_failure_is_reported_as_an_import_error \
-            --skip tests::dispatch_beyond_kernel_count_is_refused \
-            --skip tests::runs_rewritten_wasm_without_any_glue \
-            --skip tests::second_run_reuses_everything_and_dispatches_again \
-            --skip tests::unresolved_uniform_padding_uses_the_wasm_import
+            --skip tests::whole_program_split_across_cpu_and_gpu
 
   eval:
     name: eval (Gate 1)
@@ -75,7 +80,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2

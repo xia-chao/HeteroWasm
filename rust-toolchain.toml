@@ -1,0 +1,5 @@
+# Pin the toolchain so CI, local development and rust-version agree on one compiler.
+# 1.98.1 is the version the workspace declares as its minimum (rust-version = "1.98").
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]
