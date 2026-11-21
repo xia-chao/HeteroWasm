@@ -81,6 +81,17 @@ impl GpuContext {
                     },
                     count: None,
                 },
+
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -144,6 +155,21 @@ impl GpuContext {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
+
+        let scratch_words = (size / 4).div_ceil(64).max(1);
+        let scratch_bytes = (scratch_words * 4) as u64;
+        let scratch = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("partials"),
+            size: scratch_bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let scratch_staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("partials readback"),
+            size: scratch_bytes,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
         let storage = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("mem"),
             size: size as u64,
@@ -180,6 +206,10 @@ impl GpuContext {
                     binding: 2,
                     resource: results.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: scratch.as_entire_binding(),
+                },
             ],
         });
         Workspace {
@@ -188,10 +218,13 @@ impl GpuContext {
             staging,
             results,
             results_staging,
+            scratch,
+            scratch_staging,
             bind_group,
             size,
             uniform_size,
             result_slots,
+            scratch_words,
         }
     }
 
@@ -318,6 +351,7 @@ impl GpuContext {
         let DispatchReadback {
             regions,
             exit_values,
+            partials: _,
         } = self.run_parts(
             compiled,
             shader,
@@ -327,6 +361,7 @@ impl GpuContext {
                 parts: &parts,
             },
             params,
+            None,
             trace,
         )?;
         for (lo, bytes) in regions {
@@ -341,6 +376,10 @@ impl GpuContext {
     }
 
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is a distinct execution input; packing them would hide provenance"
+    )]
     pub(crate) fn run_parts(
         &self,
         compiled: &Compiled,
@@ -348,6 +387,7 @@ impl GpuContext {
         workspace: &Workspace,
         memory: DispatchMemory<'_>,
         params: &[u32],
+        dispatch_override: Option<u32>,
         trace: &Trace,
     ) -> Result<DispatchReadback, RuntimeError> {
         let DispatchMemory { limit, parts } = memory;
@@ -385,100 +425,109 @@ impl GpuContext {
         self.queue
             .write_buffer(&workspace.uniform, 0, &uniform_bytes);
 
-        let dispatched = match shader.dispatch {
-            DispatchSpec::Fixed(limit) => limit,
-            DispatchSpec::FromField(field) => {
-                *params
+        let dispatched = match (dispatch_override, shader.dispatch) {
+            (Some(count), _) => count,
+            (None, shader_dispatch) => match shader_dispatch {
+                DispatchSpec::Fixed(limit) => limit,
+                DispatchSpec::FromField(field) => {
+                    *params
+                        .get(field)
+                        .ok_or_else(|| RuntimeError::DispatchRefused {
+                            reason: format!(
+                            "dispatch taken from field p{field}, but only {} arguments received",
+                            params.len()
+                        ),
+                        })?
+                }
+                DispatchSpec::FromFieldMask(field, mask) => {
+                    params
+                        .get(field)
+                        .ok_or_else(|| RuntimeError::DispatchRefused {
+                            reason: format!(
+                            "dispatch taken from field p{field}, but only {} arguments received",
+                            params.len()
+                        ),
+                        })?
+                        & mask
+                }
+                DispatchSpec::FromFieldMaskAdd(field, mask, addend) => params
                     .get(field)
                     .ok_or_else(|| RuntimeError::DispatchRefused {
                         reason: format!(
                             "dispatch taken from field p{field}, but only {} arguments received",
                             params.len()
                         ),
-                    })?
-            }
-            DispatchSpec::FromFieldMask(field, mask) => {
-                params
-                    .get(field)
-                    .ok_or_else(|| RuntimeError::DispatchRefused {
-                        reason: format!(
-                            "dispatch taken from field p{field}, but only {} arguments received",
-                            params.len()
-                        ),
-                    })?
-                    & mask
-            }
-            DispatchSpec::FromFieldMaskAdd(field, mask, addend) => params
-                .get(field)
-                .ok_or_else(|| RuntimeError::DispatchRefused {
-                    reason: format!(
-                        "dispatch taken from field p{field}, but only {} arguments received",
-                        params.len()
-                    ),
-                })
-                .map(|value| (value & mask).wrapping_add(addend))?,
-            DispatchSpec::FromSum(left, right) => {
-                let left = *params
-                    .get(left)
-                    .ok_or_else(|| RuntimeError::DispatchRefused {
-                        reason: format!("dispatch sum field p{left} is missing"),
-                    })?;
-                let right = *params
-                    .get(right)
-                    .ok_or_else(|| RuntimeError::DispatchRefused {
-                        reason: format!("dispatch sum field p{right} is missing"),
-                    })?;
-                left.wrapping_add(right)
-            }
-            DispatchSpec::FromSumShift(base, shifted, amount) => {
-                let base = *params
-                    .get(base)
-                    .ok_or_else(|| RuntimeError::DispatchRefused {
-                        reason: format!("dispatch sum field p{base} is missing"),
-                    })?;
-                let shifted =
-                    *params
-                        .get(shifted)
+                    })
+                    .map(|value| (value & mask).wrapping_add(addend))?,
+                DispatchSpec::FromSum(left, right) => {
+                    let left = *params
+                        .get(left)
                         .ok_or_else(|| RuntimeError::DispatchRefused {
-                            reason: format!("dispatch sum field p{shifted} is missing"),
+                            reason: format!("dispatch sum field p{left} is missing"),
                         })?;
-                base.wrapping_add(shifted.wrapping_shl(amount))
-            }
-            DispatchSpec::FromSubShift(base, minuend, subtrahend, amount) => {
-                let base = *params
-                    .get(base)
-                    .ok_or_else(|| RuntimeError::DispatchRefused {
-                        reason: format!("dispatch sum field p{base} is missing"),
-                    })?;
-                let minuend =
-                    *params
-                        .get(minuend)
+                    let right =
+                        *params
+                            .get(right)
+                            .ok_or_else(|| RuntimeError::DispatchRefused {
+                                reason: format!("dispatch sum field p{right} is missing"),
+                            })?;
+                    left.wrapping_add(right)
+                }
+                DispatchSpec::FromSumShift(base, shifted, amount) => {
+                    let base = *params
+                        .get(base)
                         .ok_or_else(|| RuntimeError::DispatchRefused {
-                            reason: format!("dispatch sum field p{minuend} is missing"),
+                            reason: format!("dispatch sum field p{base} is missing"),
                         })?;
-                let subtrahend =
-                    *params
-                        .get(subtrahend)
+                    let shifted =
+                        *params
+                            .get(shifted)
+                            .ok_or_else(|| RuntimeError::DispatchRefused {
+                                reason: format!("dispatch sum field p{shifted} is missing"),
+                            })?;
+                    base.wrapping_add(shifted.wrapping_shl(amount))
+                }
+                DispatchSpec::FromSubShift(base, minuend, subtrahend, amount) => {
+                    let base = *params
+                        .get(base)
                         .ok_or_else(|| RuntimeError::DispatchRefused {
-                            reason: format!("dispatch sum field p{subtrahend} is missing"),
+                            reason: format!("dispatch sum field p{base} is missing"),
                         })?;
-                base.wrapping_add(minuend.wrapping_sub(subtrahend).wrapping_shl(amount))
-            }
-            DispatchSpec::FromLoadedShiftMask(..) | DispatchSpec::FromLoaded(..) => {
-                let (start, mask) = shader.dispatch.loaded_word(params).ok_or_else(|| {
-                    RuntimeError::DispatchRefused {
-                        reason: "loaded dispatch bound is out of range".to_string(),
-                    }
-                })?;
-                let word =
-                    Self::word_at(parts, start).ok_or_else(|| RuntimeError::DispatchRefused {
-                        reason: "loaded dispatch bound is out of range".to_string(),
+                    let minuend =
+                        *params
+                            .get(minuend)
+                            .ok_or_else(|| RuntimeError::DispatchRefused {
+                                reason: format!("dispatch sum field p{minuend} is missing"),
+                            })?;
+                    let subtrahend =
+                        *params
+                            .get(subtrahend)
+                            .ok_or_else(|| RuntimeError::DispatchRefused {
+                                reason: format!("dispatch sum field p{subtrahend} is missing"),
+                            })?;
+                    base.wrapping_add(minuend.wrapping_sub(subtrahend).wrapping_shl(amount))
+                }
+                DispatchSpec::FromLoadedShiftMask(..) | DispatchSpec::FromLoaded(..) => {
+                    let (start, mask) = shader.dispatch.loaded_word(params).ok_or_else(|| {
+                        RuntimeError::DispatchRefused {
+                            reason: "loaded dispatch bound is out of range".to_string(),
+                        }
                     })?;
-                word & mask
-            }
+                    let word = Self::word_at(parts, start).ok_or_else(|| {
+                        RuntimeError::DispatchRefused {
+                            reason: "loaded dispatch bound is out of range".to_string(),
+                        }
+                    })?;
+                    word & mask
+                }
+            },
         };
 
-        let dispatched = crate::dispatch::scheduled_invocations(shader, params, dispatched);
+        let dispatched = if dispatch_override.is_some() {
+            dispatched
+        } else {
+            crate::dispatch::scheduled_invocations(shader, params, dispatched)
+        };
 
         let workgroups = dispatched
             .div_ceil(shader.workgroup_size.max(1))
@@ -519,6 +568,14 @@ impl GpuContext {
             0,
             result_bytes,
         );
+
+        encoder.copy_buffer_to_buffer(
+            &workspace.scratch,
+            0,
+            &workspace.scratch_staging,
+            0,
+            (workspace.scratch_words * 4) as u64,
+        );
         self.queue.submit(Some(encoder.finish()));
 
         let slice = workspace.staging.slice(..);
@@ -531,6 +588,11 @@ impl GpuContext {
         result_slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = result_sender.send(result);
         });
+        let scratch_slice = workspace.scratch_staging.slice(..);
+        let (partial_sender, partial_receiver) = std::sync::mpsc::channel();
+        scratch_slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = partial_sender.send(result);
+        });
         self.device
             .poll(wgpu::PollType::Wait {
                 submission_index: None,
@@ -539,6 +601,7 @@ impl GpuContext {
             .ok();
         let _ = receiver.recv();
         let _ = result_receiver.recv();
+        let _ = partial_receiver.recv();
 
 
         let exit_values: Vec<u32> = {
@@ -564,6 +627,25 @@ impl GpuContext {
             values
         };
         workspace.results_staging.unmap();
+
+
+        let partials: Vec<u32> = {
+            let mapped =
+                scratch_slice
+                    .get_mapped_range()
+                    .map_err(|error| RuntimeError::GpuUnavailable {
+                        reason: error.to_string(),
+                    })?;
+            let values = mapped
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|bytes| u32::from_le_bytes(*bytes))
+                .collect::<Vec<u32>>();
+            drop(mapped);
+            values
+        };
+        workspace.scratch_staging.unmap();
 
 
         let mut regions = Vec::new();
@@ -614,6 +696,7 @@ impl GpuContext {
         Ok(DispatchReadback {
             regions,
             exit_values,
+            partials,
         })
     }
 }
@@ -626,10 +709,14 @@ pub struct Workspace {
 
     results: wgpu::Buffer,
     results_staging: wgpu::Buffer,
+
+    scratch: wgpu::Buffer,
+    scratch_staging: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     size: usize,
     uniform_size: usize,
     result_slots: usize,
+    scratch_words: usize,
 }
 
 impl Workspace {

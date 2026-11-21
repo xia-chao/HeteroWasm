@@ -17,6 +17,7 @@ pub(crate) fn compile(
     trace: Trace,
     require_offload: bool,
     numeric: bool,
+    reductions: bool,
 ) -> Result<(), CliError> {
     let mode = if numeric {
         NumericMode::F32
@@ -29,7 +30,7 @@ pub(crate) fn compile(
         source,
     })?;
 
-    let prepared = prepare_input(&raw, mode, &trace)?;
+    let prepared = prepare_input(&raw, mode, reductions, &trace)?;
 
 
     std::fs::create_dir_all(output).map_err(|source| CliError::CreateDir {
@@ -91,12 +92,17 @@ pub(crate) fn compile(
                 .emit();
             expand_all_bodies(&mut module, &trace)
                 .map_err(|err| CliError::Message(err.to_string()))?;
-            heterowasm_wgsl::plan_gpu_loops_with(&module, &trace, mode)
+            heterowasm_wgsl::plan_gpu_loops_with_options(&module, &trace, mode, reductions)
         }
     };
     let fusion_only: HashSet<Func> = plan_set.fusion_candidates.clone();
 
-    let fused = if numeric || fusion_only.is_empty() {
+    let fused = if numeric {
+        None
+    } else if reductions {
+
+        emit_fused_reduction(&module, output, &trace, &plan_set)?
+    } else if fusion_only.is_empty() {
         None
     } else {
         emit_fused(&module, output, &trace, &plan_set)?
@@ -161,7 +167,14 @@ pub(crate) fn compile(
         );
         return Ok(());
     }
-    let replaced = rewrite_and_write(&mut module, output, &trace, fused_rewrite, &plan_set)?;
+    let replaced = rewrite_and_write(
+        &mut module,
+        output,
+        &trace,
+        fused_rewrite,
+        reductions,
+        &plan_set,
+    )?;
 
 
     let live: Vec<String> = if fused_rewrite {
@@ -205,7 +218,12 @@ struct Prepared {
 }
 
 
-fn prepare_input(raw: &[u8], mode: NumericMode, trace: &Trace) -> Result<Prepared, CliError> {
+fn prepare_input(
+    raw: &[u8],
+    mode: NumericMode,
+    reductions: bool,
+    trace: &Trace,
+) -> Result<Prepared, CliError> {
 
     let probe_bytes = match std::str::from_utf8(raw)
         .ok()
@@ -221,7 +239,7 @@ fn prepare_input(raw: &[u8], mode: NumericMode, trace: &Trace) -> Result<Prepare
     expand_all_bodies(&mut probe, trace).map_err(|err| CliError::Message(err.to_string()))?;
 
 
-    let plans = heterowasm_wgsl::plan_gpu_loops_with(&probe, trace, mode);
+    let plans = heterowasm_wgsl::plan_gpu_loops_with_options(&probe, trace, mode, reductions);
     let probe_funcs = probe.funcs.len();
     let probe_shape: Vec<Option<(usize, usize)>> = probe
         .funcs
@@ -243,6 +261,23 @@ fn prepare_input(raw: &[u8], mode: NumericMode, trace: &Trace) -> Result<Prepare
                 results.max(plan.kernel.results.len()),
             )
         });
+
+    let width = if reductions {
+        match heterowasm_wgsl::plan_gpu_fusion_reduction_from(
+            &probe,
+            trace,
+            Some(&plans.fusion_candidates),
+            &plans.fusion_inputs,
+        ) {
+            Ok(Some(plan)) => (
+                width.0.max(plan.kernel.fields.len()),
+                width.1.max(plan.kernel.results.len()),
+            ),
+            _ => width,
+        }
+    } else {
+        width
+    };
     let arity = if plans.eligible.is_empty() {
         heterowasm_wgsl::plan_gpu_arity(&probe, trace)
     } else {
@@ -319,6 +354,45 @@ fn emit_fused(
 }
 
 
+fn emit_fused_reduction(
+    module: &Module<'_>,
+    output: &Path,
+    trace: &Trace,
+    plan_set: &LoopPlanSet,
+) -> Result<Option<String>, CliError> {
+    let only = Some(&plan_set.fusion_candidates);
+    match heterowasm_wgsl::plan_gpu_fusion_reduction_from(
+        module,
+        trace,
+        only,
+        &plan_set.fusion_inputs,
+    ) {
+        Ok(Some(plan)) => {
+            let body = module.funcs[plan.func].body().ok_or_else(|| {
+                CliError::Message("fused reduction target is not a function body".to_string())
+            })?;
+            let fused = artifact(&plan.kernel, body)
+                .map_err(|error| CliError::Message(error.to_string()))?;
+            let name = match &module.funcs[plan.func] {
+                FuncDecl::Body(_, name, _) if !name.is_empty() => name.clone(),
+                _ => "reduction".to_string(),
+            };
+            let stem = format!("{name}-fused-reduction");
+            write_artifact(output, &stem, &fused)?;
+            println!(
+                "wrote {stem}.wgsl + {stem}.json (**producer + reduction fused into one kernel**)"
+            );
+            Ok(Some(stem))
+        }
+        Ok(None) => Ok(None),
+        Err(reason) => {
+            eprintln!("fused reduction plan failed; fall back to single-loop path: {reason}");
+            Ok(None)
+        }
+    }
+}
+
+
 fn emit_single_loops(
     module: &Module<'_>,
     plans: &LoopPlanSet,
@@ -367,9 +441,21 @@ fn rewrite_and_write(
     output: &Path,
     trace: &Trace,
     fused: bool,
+    reductions: bool,
     plan_set: &LoopPlanSet,
 ) -> Result<Vec<(usize, usize)>, CliError> {
-    let outcome = if fused {
+    let outcome = if fused && reductions {
+        heterowasm_wgsl::rewrite_module_fused_reduction_from(module, trace, &plan_set.fusion_inputs)
+            .map(|outcome| {
+                println!(
+                    "rewrite via fused-reduction path: extracted {} loops, fused = {}",
+                    outcome.loops_removed, outcome.fused
+                );
+                (0..outcome.loops_removed)
+                    .map(|index| (0_usize, index))
+                    .collect()
+            })
+    } else if fused {
         heterowasm_wgsl::rewrite_module_fused_from(module, trace, &plan_set.fusion_inputs).map(
             |outcome| {
                 println!(

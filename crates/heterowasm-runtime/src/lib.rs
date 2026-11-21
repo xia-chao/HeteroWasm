@@ -3,6 +3,7 @@ pub mod error;
 pub mod gpu;
 pub mod host;
 pub mod manifest;
+pub mod reduction;
 pub mod runtime;
 pub mod types;
 

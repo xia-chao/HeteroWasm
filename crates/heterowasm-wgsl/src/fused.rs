@@ -153,6 +153,7 @@ pub mod from_plans {
             &members,
             RegionCalls {
                 header_params: &[],
+                entry_values: &[],
                 explicit: Some(&fused_args),
                 extra: &[],
                 selector: 0,
@@ -166,6 +167,122 @@ pub mod from_plans {
         })
     }
 }
+
+
+pub mod reduction_chain {
+    use std::collections::HashSet;
+
+    use waffle::{Block, Func, Value};
+
+    use super::*;
+
+    pub fn rewrite(
+        module: &mut Module<'_>,
+        trace: &Trace,
+        input: &FusionInput,
+    ) -> Result<RewriteOutcome, String> {
+        let mut pair = None;
+        for func in module.funcs.iter() {
+            let Some(body) = module.funcs[func].body() else {
+                continue;
+            };
+            let Some(collected) = input.loops_of(func) else {
+                continue;
+            };
+            if let Some((_, producer_index, consumer_index)) =
+                fusable_pairs(body, collected).into_iter().next()
+            {
+                pair = Some((func, producer_index, consumer_index, collected));
+                break;
+            }
+        }
+        let Some((func, producer_index, consumer_index, collected)) = pair else {
+            let removed = rewrite_module_for_gpu(module, trace)?.len();
+            return Ok(RewriteOutcome {
+                loops_removed: removed,
+                fused: false,
+            });
+        };
+
+        let consumed: HashSet<Func> = [func].into_iter().collect();
+        let Some(plan) =
+            crate::fusion::plan_gpu_fusion_reduction_from(module, trace, Some(&consumed), input)?
+        else {
+            return Err("fused reduction pair no longer plans".to_string());
+        };
+
+        let (producer_header, _, producer_members, consumer_exit, consumer_members, explicit) = {
+            let body = module.funcs[func].body().ok_or("not a function body")?;
+            let (producer_header, _, producer_members) =
+                region_span(body, &collected[producer_index].0)?;
+            let (_, consumer_exit, consumer_members) =
+                region_span(body, &collected[consumer_index].0)?;
+            let explicit = plan
+                .kernel
+                .fields
+                .iter()
+                .map(|field| resolve_at_entry(body, *field))
+                .collect::<Result<Vec<Value>, String>>()?;
+            (
+                producer_header,
+                (),
+                producer_members,
+                consumer_exit,
+                consumer_members,
+                explicit,
+            )
+        };
+        let mut members = producer_members;
+        for block in consumer_members {
+            if !members.contains(&block) {
+                members.push(block);
+            }
+        }
+
+        let entry_values: Vec<(Value, Value)> = {
+            let body = module.funcs[func].body().ok_or("not a function body")?;
+            let evolution = ScalarEvolution::analyze(body, &collected[consumer_index].0, trace);
+            let members_set: HashSet<Block> = members.iter().copied().collect();
+            crate::live_out::live_outs(body, &members_set)
+                .into_iter()
+                .filter(|value| {
+                    !crate::live_out::is_pass_through(body, producer_header, &members_set, *value)
+                })
+                .filter_map(|value| {
+                    let canonical = heterowasm_scev::canonical_value(body, value);
+                    if !evolution.invariant_parameters().contains(&canonical) {
+                        return None;
+                    }
+                    resolve_at_entry(body, value)
+                        .ok()
+                        .map(|source| (value, source))
+                })
+                .collect()
+        };
+        offload_region_calls(
+            module,
+            func,
+            producer_header,
+            consumer_exit,
+            &members,
+            RegionCalls {
+                header_params: &[],
+                entry_values: &entry_values,
+                explicit: Some(&explicit),
+                extra: &[],
+                selector: 0,
+                extra_selectors: &[],
+                trip: None,
+            },
+        )?;
+        Ok(RewriteOutcome {
+            loops_removed: 2,
+            fused: true,
+        })
+    }
+}
+
+pub use reduction_chain::rewrite as rewrite_module_fused_reduction_from;
 
 pub use from_plans::rewrite as rewrite_module_fused_from;
 

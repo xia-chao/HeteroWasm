@@ -69,6 +69,37 @@ pub struct Kernel {
     pub launch_count: Option<u32>,
 
     pub results: Vec<String>,
+
+    pub reduction: Option<ReductionPlan>,
+}
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KernelReductionOp {
+    Add,
+    And,
+    Or,
+    Xor,
+}
+
+impl KernelReductionOp {
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KernelReductionOp::Add => "add",
+            KernelReductionOp::And => "and",
+            KernelReductionOp::Or => "or",
+            KernelReductionOp::Xor => "xor",
+        }
+    }
+}
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReductionPlan {
+    pub op: KernelReductionOp,
+
+    pub chunk: u32,
 }
 
 

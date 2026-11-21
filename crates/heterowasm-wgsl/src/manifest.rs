@@ -96,6 +96,19 @@ pub fn artifact<'a>(kernel: &'a Kernel, body: &FunctionBody) -> Result<Artifact<
     } else {
         manifest
     };
+
+    let manifest = match kernel.reduction {
+        Some(plan) => manifest.replacen(
+            "  \"fields_resolved\":",
+            &format!(
+                "  \"reduction_op\": \"{}\",\n  \"reduction_chunk\": {},\n  \"scratch_binding\": 3,\n  \"fields_resolved\":",
+                plan.op.as_str(),
+                plan.chunk
+            ),
+            1,
+        ),
+        None => manifest,
+    };
     Ok(Artifact {
         wgsl: &kernel.source,
         manifest,

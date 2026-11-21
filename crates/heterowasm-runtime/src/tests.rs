@@ -782,3 +782,156 @@ fn word_index_readback_covers_every_iteration() {
         "readback must reach byte 256 (word 62 + 4), got {hi}"
     );
 }
+
+
+#[test]
+fn reduction_fold_matches_sequential_integer_ops() {
+    use crate::reduction::{fold, ReductionOp};
+    assert_eq!(fold(ReductionOp::Add, &[]), 0);
+    assert_eq!(fold(ReductionOp::And, &[]), u32::MAX);
+    assert_eq!(fold(ReductionOp::Add, &[1, 2, 3, 4]), 10);
+    assert_eq!(fold(ReductionOp::Add, &[u32::MAX, 2]), 1);
+    assert_eq!(fold(ReductionOp::Or, &[1, 2, 4]), 7);
+    assert_eq!(fold(ReductionOp::Xor, &[0b1010, 0b0110]), 0b1100);
+    assert_eq!(fold(ReductionOp::And, &[0b1111, 0b1010]), 0b1010);
+    for name in ["add", "and", "or", "xor"] {
+        let op = ReductionOp::parse(name).expect("known operator");
+        assert_eq!(op.as_str(), name);
+    }
+    assert!(ReductionOp::parse("mul").is_none());
+}
+
+
+#[test]
+fn manifest_parses_the_reduction_contract() {
+    let text = r#"{
+  "schema": "heterowasm.kernel.v1",
+  "workgroup_size": 64,
+  "dispatch": { "kind": "fixed", "count": 4 },
+  "uniform_size": 16,
+  "min_offset_bytes": 0,
+  "max_constant_bytes": 0,
+  "max_stride_bytes": 4,
+  "reduction_op": "add",
+  "reduction_chunk": 64,
+  "scratch_binding": 3,
+  "fields_resolved": false,
+  "fields": []
+}"#;
+    let spec = crate::manifest::parse_kernel(
+        text,
+        std::path::Path::new("kernel.json"),
+        "k",
+        String::new(),
+    )
+    .expect("reduction manifest must parse");
+    let reduction = spec.reduction.expect("reduction spec must be present");
+    assert_eq!(reduction.op, crate::reduction::ReductionOp::Add);
+    assert_eq!(reduction.chunk, 64);
+    assert_eq!(reduction.scratch_binding, 3);
+
+    let plain = text
+        .replace("  \"reduction_op\": \"add\",\n", "")
+        .replace("  \"reduction_chunk\": 64,\n", "")
+        .replace("  \"scratch_binding\": 3,\n", "");
+    let spec = crate::manifest::parse_kernel(
+        &plain,
+        std::path::Path::new("kernel.json"),
+        "k",
+        String::new(),
+    )
+    .expect("plain manifest must parse");
+    assert!(spec.reduction.is_none(), "old manifests have no reduction");
+}
+
+
+#[test]
+fn reduction_shader_writes_partials_for_the_host_to_fold() -> Result<(), String> {
+    use crate::gpu::GpuContext;
+    use crate::reduction::{fold, ReductionOp};
+    use crate::types::{DispatchMemory, DispatchSpec, Shader};
+
+    let source = r#"
+struct Params {
+  p0 : u32,
+  p1 : u32,
+};
+
+@group(0) @binding(0) var<storage, read_write> mem : array<u32>;
+@group(0) @binding(1) var<uniform> params : Params;
+@group(0) @binding(2) var<storage, read_write> results : array<u32>;
+@group(0) @binding(3) var<storage, read_write> scratch : array<u32>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+  let trip : u32 = params.p0;
+  let begin : u32 = gid.x * 64u;
+  if (begin >= trip) {
+    return;
+  }
+  let end : u32 = min(begin + 64u, trip);
+  var acc : u32 = 0u;
+  for (var k : u32 = begin; k < end; k = k + 1u) {
+    acc = acc + mem[params.p1 / 4u + k];
+  }
+  scratch[gid.x] = acc;
+}
+"#;
+    let shader = Shader {
+        source,
+        workgroup_size: 64,
+        dispatch: DispatchSpec::FromField(0),
+        min_offset_bytes: 0,
+        max_constant_bytes: 0,
+        max_stride_bytes: 4,
+        index_field: None,
+        launch_count: None,
+        read_slots: vec![1],
+        write_slots: Vec::new(),
+    };
+    let seed: Vec<u8> = (1..=256_u32)
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    let params = [200_u32, 0_u32];
+    let context = GpuContext::new().map_err(|error| error.to_string())?;
+    let compiled = context
+        .compile(&shader)
+        .map_err(|error| error.to_string())?;
+    let workspace = context.workspace(seed.len(), params.len() * 4, 1);
+    let ranges = GpuContext::copy_ranges(
+        &shader,
+        &params,
+        seed.len(),
+        crate::dispatch::AccessDirection::Upload,
+    );
+    let mut parts = Vec::new();
+    for (_, _, copy_lo, copy_hi) in &ranges {
+        parts.push((*copy_lo, seed[*copy_lo..*copy_hi].to_vec()));
+    }
+    let threads = 200_u32.div_ceil(64);
+    let readback = context
+        .run_parts(
+            &compiled,
+            &shader,
+            &workspace,
+            DispatchMemory {
+                limit: seed.len(),
+                parts: &parts,
+            },
+            &params,
+            Some(threads),
+            &Trace::silent(),
+        )
+        .map_err(|error| error.to_string())?;
+    let words = readback
+        .partials
+        .get(..usize::try_from(threads).map_err(|error| error.to_string())?)
+        .ok_or("partials shorter than the thread count")?;
+    let folded = fold(ReductionOp::Add, words);
+    let expected: u32 = (1..=200_u32).sum();
+    assert_eq!(
+        folded, expected,
+        "folded partials must equal the sequential sum"
+    );
+    Ok(())
+}

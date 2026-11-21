@@ -114,6 +114,8 @@ fn dispatch(
         launch_count,
         read_slots,
         write_slots,
+        reduction,
+        result_slots,
     ) = {
         let state = caller.data();
         let kernel = state
@@ -135,6 +137,8 @@ fn dispatch(
             kernel.launch_count,
             kernel.read_slots.clone(),
             kernel.write_slots.clone(),
+            kernel.reduction,
+            kernel.result_slots,
         )
     };
     let shader = Shader {
@@ -148,6 +152,41 @@ fn dispatch(
         launch_count,
         read_slots,
         write_slots,
+    };
+
+
+    let threads = match reduction {
+        Some(spec) => {
+            let trip = match shader.dispatch {
+                crate::types::DispatchSpec::FromField(slot) => {
+                    *uniforms
+                        .get(slot)
+                        .ok_or_else(|| RuntimeError::DispatchRefused {
+                            reason: format!("reduction trip taken from field p{slot} is missing"),
+                        })?
+                }
+                crate::types::DispatchSpec::Fixed(count) => count,
+                _ => {
+                    return Err(wasmtime::Error::from(RuntimeError::DispatchRefused {
+                        reason: "reduction kernel needs a trip count dispatch".to_string(),
+                    }))
+                }
+            };
+            let chunk = spec.chunk.max(1);
+            let threads = trip.div_ceil(chunk);
+            let workgroups = threads.div_ceil(shader.workgroup_size.max(1));
+            if workgroups > crate::types::MAX_DISPATCH_WORKGROUPS {
+                return Err(wasmtime::Error::from(RuntimeError::DispatchRefused {
+                    reason: format!(
+                        "reduction needs {workgroups} workgroups, above the {}-workgroup limit; \
+                         lower the chunk or fall back to the CPU",
+                        crate::types::MAX_DISPATCH_WORKGROUPS
+                    ),
+                }));
+            }
+            Some(threads)
+        }
+        None => None,
     };
 
 
@@ -184,6 +223,7 @@ fn dispatch(
             },
             uniforms,
             uniform_size,
+            threads,
             &trace,
         )
     }?;
@@ -191,8 +231,21 @@ fn dispatch(
     let DispatchReadback {
         regions,
         exit_values,
+        partials,
     } = ran;
     write_memory(&memory, caller, &regions).map_err(wasmtime::Error::from)?;
+
+
+    let exit_values = match reduction {
+        Some(spec) => {
+            let count = threads.map_or(0, |count| count as usize);
+            let words = partials.get(..count.min(partials.len())).unwrap_or(&[]);
+            let folded = crate::reduction::fold(spec.op, words);
+
+            vec![folded; result_slots]
+        }
+        None => exit_values,
+    };
 
 
     for slot in results.iter_mut() {
@@ -201,7 +254,6 @@ fn dispatch(
     for (slot, value) in results.iter_mut().zip(exit_values.iter()) {
         *slot = Val::I32(*value as i32);
     }
-
     trace
         .debug(Stage::Runtime, "__hw_dispatch")
         .field("call", index)
@@ -213,6 +265,10 @@ fn dispatch(
 }
 
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "host execution inputs stay explicit; packing them would hide which value is which"
+)]
 fn run_on_gpu(
     state: &mut HostState,
     index: usize,
@@ -220,6 +276,7 @@ fn run_on_gpu(
     memory: DispatchMemory<'_>,
     params: &[u32],
     uniform_size: usize,
+    dispatch_override: Option<u32>,
     trace: &Trace,
 ) -> Result<DispatchReadback, RuntimeError> {
     let size = memory.limit.max(4);
@@ -258,7 +315,15 @@ fn run_on_gpu(
     let context = &state.context;
     let limit = memory.limit.min(workspace.size());
     let memory = DispatchMemory { limit, ..memory };
-    context.run_parts(compiled, shader, workspace, memory, params, trace)
+    context.run_parts(
+        compiled,
+        shader,
+        workspace,
+        memory,
+        params,
+        dispatch_override,
+        trace,
+    )
 }
 
 

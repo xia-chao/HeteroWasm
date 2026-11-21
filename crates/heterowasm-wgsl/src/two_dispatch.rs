@@ -135,6 +135,7 @@ pub fn rewrite_module_two_dispatches(
         &members,
         RegionCalls {
             header_params: &[],
+            entry_values: &[],
             explicit: Some(&padded_first),
             extra: &[padded_second],
             selector: 0,

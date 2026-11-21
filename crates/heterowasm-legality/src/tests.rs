@@ -257,3 +257,42 @@ fn loops_with_induction_variables_must_pass_control_obligation() -> TestResult {
     );
     Ok(())
 }
+
+
+fn recognize_first_loop(
+    case_name: &str,
+) -> Result<Option<super::reduction::Reduction>, Box<dyn std::error::Error>> {
+    let case = CASES
+        .iter()
+        .find(|case| case.name == case_name)
+        .ok_or_else(|| format!("case {case_name} is not registered"))?;
+    let bytes = case.to_wasm()?;
+    let trace = Trace::silent();
+    let mut module = load_module(&bytes, &trace)?;
+    expand_all_bodies(&mut module, &trace)?;
+    for decl in module.funcs.values() {
+        let FuncDecl::Body(_, _, body) = decl else {
+            continue;
+        };
+        let flow = ControlFlow::analyze(body, &trace);
+        let loops = flow.natural_loops(body, &trace);
+        let Some(natural) = loops.first() else {
+            continue;
+        };
+        let evolution = ScalarEvolution::analyze(body, natural, &trace);
+        return Ok(super::reduction::recognize(body, natural, &evolution));
+    }
+    Err("case must contain at least one natural loop".into())
+}
+
+#[test]
+fn reduction_recognizer_accepts_the_corpus_accumulator() -> TestResult {
+    let reduction =
+        recognize_first_loop("loop_carried_scalar")?.ok_or("reduction must be recognized")?;
+    assert_eq!(reduction.op, super::reduction::ReductionOp::Add);
+    assert!(
+        recognize_first_loop("loop_carried_raw")?.is_none(),
+        "a memory RAW is not a scalar reduction"
+    );
+    Ok(())
+}
